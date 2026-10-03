@@ -1,0 +1,62 @@
+<Window x:Class="KatStreamToolkit.Views.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:KatStreamToolkit.Views"
+        Title="Chat overlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="CanResizeWithGrip"
+        SizeToContent="Manual">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="10" GlassFrameThickness="0"
+                      CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <local:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <local:BoolToVisibilityConverter x:Key="InvBoolToVis" Inverted="True" />
+    </Window.Resources>
+
+    <Grid>
+        <Border x:Name="RootBorder" CornerRadius="6" BorderThickness="1"
+                BorderBrush="#33FFFFFF" Background="#FF111418"
+                Opacity="{Binding BackgroundOpacity, Mode=OneWay}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" x:Name="HeaderPanel" Background="#22000000"
+                        Visibility="{Binding Locked, Converter={StaticResource InvBoolToVis}}"
+                        MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                    <DockPanel LastChildFill="True" Margin="10,4,10,4">
+                        <TextBlock DockPanel.Dock="Right" x:Name="StatusText"
+                                   FontSize="10" Foreground="#88FFFFFF" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Name, Mode=OneWay}" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="#CCFFFFFF" VerticalAlignment="Center" />
+                    </DockPanel>
+                </Border>
+
+                <ScrollViewer Grid.Row="1" x:Name="Scroller" VerticalScrollBarVisibility="Auto"
+                              Padding="10,4,10,6" Background="Transparent">
+                    <ItemsControl x:Name="Messages">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <local:ChatLineTextBlock Message="{Binding}" TextWrapping="Wrap" Margin="0,1" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <TextBlock Grid.Row="2" Text="locked - Ctrl+Alt+C to unlock overlays"
+                           FontSize="9" Foreground="#66FFFFFF" Margin="10,0,10,3" TextAlignment="Right"
+                           Visibility="{Binding Locked, Converter={StaticResource InvBoolToVis}}" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

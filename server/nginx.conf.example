@@ -1,0 +1,43 @@
+# Example relay config with placeholder keys.
+# The toolkit generates the real one for you (Relay tab -> Server Config, or Export server bundle).
+
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+load_module /usr/lib/nginx/modules/ngx_rtmp_module.so;
+
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+
+        application live {
+            live on;
+            record off;
+            meta copy;
+            drop_idle_publisher 30s;
+
+            # OBS publishes here: rtmp://SERVER_IP/live/YOUR_STREAM_NAME
+            # Landscape destinations get a straight copy (no CPU cost):
+            push "rtmp://live.twitch.tv/app/YOUR_TWITCH_KEY";
+            push "rtmp://a.rtmp.youtube.com/live2/YOUTUBE_KEY";
+            push "rtmp://fa723fc1b171.global-contribute.live-video.net/app/YOUR_KICK_KEY";
+
+            # Portrait destinations are rebuilt from your stream by ffmpeg
+            # (blurred-bars 1080x1920). Center-crop is also available in the toolkit:
+            exec_push "/usr/bin/ffmpeg" -hide_banner -loglevel warning
+                -i "rtmp://127.0.0.1:1935/live/$name"
+                -filter_complex "[0:v]split=2[bg][fg];[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bgb];[fg]scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos[fgs];[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
+                -map "[v]" -map 0:a
+                -c:v libx264 -preset veryfast -b:v 4500k -maxrate 4500k -bufsize 9000k
+                -pix_fmt yuv420p -g 120 -sc_threshold 0
+                -c:a aac -b:a 160k -ar 44100
+                -f flv "rtmp://push.tiktokcdn.com/live/YOUR_TIKTOK_KEY";
+        }
+    }
+}

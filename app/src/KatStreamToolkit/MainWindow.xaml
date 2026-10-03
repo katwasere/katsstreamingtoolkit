@@ -1,0 +1,264 @@
+<Window x:Class="KatStreamToolkit.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:KatStreamToolkit.ViewModels"
+        Title="KAT's Streaming Toolkit" Height="720" Width="1100"
+        WindowStartupLocation="CenterScreen">
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
+
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Background="#FF1B1E24" Padding="12,6">
+            <TextBlock Text="{Binding BandwidthSummary, Mode=OneWay}" Foreground="#FF9AA0A8" FontSize="12" />
+        </Border>
+
+        <TabControl Margin="8">
+            <TabItem Header="Relay &amp; Routing">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+
+                        <TextBlock Text="How your stream travels" FontSize="18" FontWeight="Bold" Margin="0,4,0,8" />
+                        <Border Background="#FF23272E" CornerRadius="8" Padding="16,12" Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Background="#FF2D5B8A" CornerRadius="6" Padding="14,8">
+                                    <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="OBS" /><LineBreak /><Run Text="(your PC)" FontSize="10" /></TextBlock>
+                                </Border>
+                                <TextBlock Text="  ── one stream ──▶  " VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                <Border Background="#FF6E3A8C" CornerRadius="6" Padding="14,8">
+                                    <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="Relay server (VPS)" /><LineBreak /><Run Text="cheap cloud box" FontSize="10" /></TextBlock>
+                                </Border>
+                                <TextBlock Text="  ──▶  " VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                <ItemsControl ItemsSource="{Binding Destinations}" Margin="0">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,6,6" CornerRadius="6" Padding="10,6"
+                                                    Background="#FF1E4D2E"
+                                                    BorderBrush="#FF3C3C3C" BorderThickness="1">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                                <Setter Property="Opacity" Value="0.35" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Name}" Foreground="White" FontSize="11" FontWeight="SemiBold" />
+                                                    <TextBlock Foreground="#FFB9C2CC" FontSize="10">
+                                                        <Run Text="{Binding Orientation, Mode=OneWay}" />
+                                                        <Run Text=" • " />
+                                                        <Run Text="{Binding VideoBitrateKbps, Mode=OneWay}" />
+                                                        <Run Text=" kbps" />
+                                                    </TextBlock>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="Upstream (what OBS sends to your server)" FontSize="15" FontWeight="Bold" Margin="0,8,0,6" />
+                        <Border Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
+                                    <TextBlock Text="Video bitrate (kbps):" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="90" Text="{Binding Config.Upstream.VideoBitrateKbps}" VerticalAlignment="Center" />
+                                    <TextBlock Text="   FPS:" Width="50" Margin="16,0,0,0" VerticalAlignment="Center" />
+                                    <TextBox Width="60" Text="{Binding Config.Upstream.Fps}" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                                    <TextBlock Text="Resolution:" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="70" Text="{Binding Config.Upstream.Width}" VerticalAlignment="Center" />
+                                    <TextBlock Text=" x " Margin="2" VerticalAlignment="Center" />
+                                    <TextBox Width="70" Text="{Binding Config.Upstream.Height}" VerticalAlignment="Center" />
+                                    <TextBlock Text="(portrait renditions are computed from this)" FontSize="11" Margin="12,0,0,0" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                                    <TextBlock Text="Stream name (OBS key):" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="200" Text="{Binding Config.Upstream.StreamName}" VerticalAlignment="Center" />
+                                    <TextBlock Text="  your secret - OBS needs this to reach your server" FontSize="11" Margin="8,0,0,0" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                                    <TextBlock Text="Server host (IP or domain):" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="200" Text="{Binding Config.ServerHost}" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <DockPanel Margin="0,8,0,6">
+                            <TextBlock Text="Destinations (what the server sends out)" FontSize="15" FontWeight="Bold" />
+                            <Button DockPanel.Dock="Right" HorizontalAlignment="Right" Content="Add destination"
+                                    Command="{Binding AddDestinationCommand}" Padding="10,3" />
+                        </DockPanel>
+                        <DataGrid ItemsSource="{Binding Destinations}"
+                                  SelectedItem="{Binding SelectedDestination}"
+                                  AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                                  HeadersVisibility="Column" MinHeight="180" Margin="0,0,0,12">
+                            <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
+                                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="170" />
+                                <DataGridComboBoxColumn Header="Platform" SelectedItemBinding="{Binding Platform}" Width="90"
+                                                        ItemsSource="{x:Static vm:MainViewModel.AllPlatforms}" />
+                                <DataGridComboBoxColumn Header="Orientation" SelectedItemBinding="{Binding Orientation}" Width="100"
+                                                        ItemsSource="{x:Static vm:MainViewModel.AllOrientations}" />
+                                <DataGridComboBoxColumn Header="Portrait style" SelectedItemBinding="{Binding PortraitStyle}" Width="140"
+                                                        ItemsSource="{x:Static vm:MainViewModel.AllPortraitStyles}" />
+                                <DataGridTextColumn Header="Ingest URL (from platform dashboard)" Binding="{Binding IngestUrl}" Width="*" />
+                                <DataGridTextColumn Header="Stream key" Binding="{Binding StreamKey}" Width="150" />
+                                <DataGridTextColumn Header="kbps" Binding="{Binding VideoBitrateKbps}" Width="60" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <Button Content="Export server bundle..." Command="{Binding ExportServerCommand}" Padding="12,5" HorizontalAlignment="Left" />
+                        <TextBlock Text="Writes a ready-to-deploy folder (Dockerfile + nginx config + step-by-step guide). See the Server tab for a preview."
+                                   FontSize="11" Foreground="#FF9AA0A8" Margin="0,4,0,0" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Chat Overlays">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                        <TextBlock Text="My channels" FontSize="14" FontWeight="Bold" Margin="0,0,0,4" />
+                        <TextBlock Text="Twitch channel" FontSize="11" Foreground="#FF9AA0A8" />
+                        <TextBox Text="{Binding Config.MyChannels.TwitchChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                        <TextBlock Text="Kick channel" FontSize="11" Foreground="#FF9AA0A8" />
+                        <TextBox Text="{Binding Config.MyChannels.KickChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                        <TextBlock Text="YouTube (video URL or @handle)" FontSize="11" Foreground="#FF9AA0A8" />
+                        <TextBox Text="{Binding Config.MyChannels.YouTubeUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,10" />
+                        <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,10" />
+
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
+                            <Button Content="Remove" Command="{Binding RemoveOverlayCommand}" Margin="6,0,0,0" Padding="10,3" />
+                        </StackPanel>
+                        <ListBox ItemsSource="{Binding Overlays}" SelectedItem="{Binding SelectedOverlay}"
+                                 MinHeight="220" Margin="0,8,0,0" DisplayMemberPath="Name" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                        <StackPanel DataContext="{Binding SelectedOverlay}" Margin="8,0,0,0">
+                            <TextBlock FontSize="15" FontWeight="Bold" Margin="0,0,0,8">
+                                <Run Text="Settings for: " /><Run Text="{Binding Name, Mode=OneWay}" />
+                            </TextBlock>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Chat source:" Width="170" VerticalAlignment="Center" />
+                                <ComboBox Width="160" SelectedItem="{Binding Mode}"
+                                          ItemsSource="{x:Static vm:MainViewModel.AllChatModes}" />
+                                <TextBlock Text="   All = merged from every platform below" FontSize="11" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                                <TextBlock Text="Twitch channel:" Width="170" VerticalAlignment="Center" />
+                                <TextBox Width="200" Text="{Binding TwitchChannel}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Kick channel:" Width="170" VerticalAlignment="Center" />
+                                <TextBox Width="200" Text="{Binding KickChannel}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Kick chatroom id (optional):" Width="170" VerticalAlignment="Center" />
+                                <TextBox Width="200" Text="{Binding KickChatroomId}" />
+                                <TextBlock Text="  used only if auto-resolve is blocked" FontSize="11" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="YouTube URL / @handle:" Width="170" VerticalAlignment="Center" />
+                                <TextBox Width="200" Text="{Binding YouTubeUrl}" />
+                            </StackPanel>
+
+                            <Separator Margin="0,12" />
+
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Background opacity:" Width="170" VerticalAlignment="Center" />
+                                <Slider Width="220" Minimum="0" Maximum="1" Value="{Binding BackgroundOpacity}" />
+                                <TextBlock Text="{Binding BackgroundOpacity, StringFormat={}{0:P0}}" Margin="8,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Font size:" Width="170" VerticalAlignment="Center" />
+                                <Slider Width="220" Minimum="9" Maximum="40" Value="{Binding FontSize}" IsSnapToTickEnabled="True" TickFrequency="1" />
+                                <TextBlock Text="{Binding FontSize}" Margin="8,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Max messages:" Width="170" VerticalAlignment="Center" />
+                                <Slider Width="220" Minimum="5" Maximum="100" Value="{Binding MaxMessages}" IsSnapToTickEnabled="True" TickFrequency="1" />
+                                <TextBlock Text="{Binding MaxMessages}" Margin="8,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+
+                            <Separator Margin="0,12" />
+
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <CheckBox IsChecked="{Binding Locked}" Content="Locked (click-through: mouse passes through to your game)" Margin="0,0,0,2" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                                <CheckBox IsChecked="{Binding IsVisible}" Content="Shown on screen" />
+                            </StackPanel>
+                            <TextBlock Text="Position/size: drag the overlay by its title bar while unlocked; resize from the edges. Ctrl+Alt+C locks/unlocks ALL overlays at once."
+                                       FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            <TextBlock Text="Channel changes reconnect automatically. Fullscreen-exclusive games hide overlays - use borderless fullscreen in your game."
+                                       FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Server Config">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                        <Button DockPanel.Dock="Right" Content="Export server bundle..." Command="{Binding ExportServerCommand}" Padding="10,3" />
+                        <TextBlock Text="nginx.conf the toolkit generates from your destinations (lives on your VPS - contains stream keys, do not commit):"
+                                   FontWeight="SemiBold" TextWrapping="Wrap" />
+                    </DockPanel>
+                    <TextBox Grid.Row="1" Text="{Binding NginxPreview, Mode=OneWay}" IsReadOnly="True"
+                             FontFamily="Consolas" FontSize="12" Background="#FF1B1E24" Foreground="#FFD8DEE9"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextChanged="PreviewBox_TextChanged" />
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Help">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="12" MaxWidth="900" HorizontalAlignment="Left">
+                        <TextBlock Text="What this does, in one paragraph" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="Your home internet only has to send ONE stream. It goes to a cheap cloud server you rent (a 'VPS'). That server runs nginx + ffmpeg: it forwards a straight copy of your stream to every landscape destination, and builds portrait 1080x1920 versions (center-crop or blurred bars) for phone-first platforms like TikTok and YouTube Shorts. Your platform stream keys live on the server, not in OBS - change platforms without touching OBS." />
+
+                        <TextBlock Text="Quick start" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="1) Fill in your destination ingest URLs and stream keys (copied from each platform's dashboard).&#x0a;2) Click 'Export server bundle...' - get a folder.&#x0a;3) Follow SETUP.md inside that folder to rent a VPS and start the relay (about 10 minutes, no experience needed).&#x0a;4) In OBS: Settings -> Stream -> Custom, server rtmp://YOUR.SERVER.IP/live, key = your stream name.&#x0a;5) Go live everywhere at once. Watch the toolkit's overlay tab for chat." />
+
+                        <TextBlock Text="Chat overlays" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="Overlays are transparent windows that float over your game. Unlock them (Ctrl+Alt+C) to drag and resize; lock them so clicks pass through to the game. Each overlay can merge every platform or show just one - add as many as you like. Twitch needs no login (anonymous read), Kick uses its public websocket, YouTube uses its public live-chat endpoint. TikTok chat is on the roadmap; its video output works today." />
+
+                        <TextBlock Text="Costs" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="The only cost is the VPS: roughly 4-6 EUR/month for typical multi-streaming (Hetzner CX22 includes 20 TB of traffic; Oracle Cloud has a free tier big enough). The status bar at the bottom of the Relay tab estimates your server's traffic so you can stay inside the allowance." />
+
+                        <TextBlock Text="Roadmap" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="TikTok chat connector, BTTV/7TV emotes in overlays, one-click deploy to your VPS from the app (SSH), live status indicators for each destination, OBS scene auto-switching via obs-websocket, and a local relay mode (no VPS) for strong connections. See docs/ROADMAP.md." />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

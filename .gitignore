@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+publish/
+
+# Relay configs contain platform stream keys - never commit real ones.
+server/nginx.conf
+server-export/
