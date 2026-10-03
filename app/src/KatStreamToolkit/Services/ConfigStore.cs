@@ -55,6 +55,50 @@ public static class ConfigStore
         File.WriteAllText(FilePath, json);
     }
 
+    // One-time migration: older builds stored keys inside config.json.
+    // Pull them out so they can be moved into secrets.json and stripped.
+    public static SecretsData? TryReadLegacySecrets()
+    {
+        try
+        {
+            if (!File.Exists(FilePath))
+                return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(FilePath));
+            var root = doc.RootElement;
+            var data = new SecretsData();
+
+            if (root.TryGetProperty("ServerHost", out var host) && host.ValueKind == JsonValueKind.String)
+                data.ServerHost = host.GetString() ?? "";
+
+            if (root.TryGetProperty("Upstream", out var upstream) &&
+                upstream.TryGetProperty("StreamName", out var streamName) &&
+                streamName.ValueKind == JsonValueKind.String)
+                data.UpstreamStreamName = streamName.GetString() ?? "";
+
+            if (root.TryGetProperty("Destinations", out var destinations) &&
+                destinations.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in destinations.EnumerateArray())
+                {
+                    string? id = d.TryGetProperty("Id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                        ? idEl.GetString() : null;
+                    string? key = d.TryGetProperty("StreamKey", out var keyEl) && keyEl.ValueKind == JsonValueKind.String
+                        ? keyEl.GetString() : null;
+                    if (id != null && !string.IsNullOrEmpty(key))
+                        data.DestinationKeys![id] = key!;
+                }
+            }
+
+            if (data.DestinationKeys!.Count == 0 && data.ServerHost.Length == 0 && data.UpstreamStreamName.Length == 0)
+                return null;
+            return data;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static AppConfig CreateDefaults()
     {
         return new AppConfig

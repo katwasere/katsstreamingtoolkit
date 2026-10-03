@@ -5,7 +5,7 @@ namespace KatStreamToolkit.Services;
 
 public static class RelayConfigGenerator
 {
-    public static string GenerateNginxConf(AppConfig cfg)
+    public static string GenerateNginxConf(AppConfig cfg, bool includeKeys = true)
     {
         var up = cfg.Upstream;
         var sb = new StringBuilder();
@@ -43,14 +43,14 @@ public static class RelayConfigGenerator
         foreach (var dest in passthrough)
         {
             sb.AppendLine($"            # {dest.Name}");
-            sb.AppendLine($"            push \"{Url(dest)}\";");
+            sb.AppendLine($"            push \"{Url(dest, includeKeys)}\";");
             sb.AppendLine();
         }
 
         foreach (var dest in processed)
         {
             sb.AppendLine($"            # {dest.Name} ({dest.PortraitStyle})");
-            sb.AppendLine($"            exec_push {BuildFfmpegArgs(up, dest)};");
+            sb.AppendLine($"            exec_push {BuildFfmpegArgs(up, dest, includeKeys)};");
             sb.AppendLine();
         }
 
@@ -60,15 +60,15 @@ public static class RelayConfigGenerator
         return sb.ToString();
     }
 
-    private static string Url(DestinationConfig dest)
-        => $"{dest.IngestUrl.TrimEnd('/')}/{dest.StreamKey}";
+    private static string Url(DestinationConfig dest, bool includeKeys = true)
+        => $"{dest.IngestUrl.TrimEnd('/')}/{(includeKeys ? dest.StreamKey : SecretsStore.MaskKey)}";
 
-    private static string BuildFfmpegArgs(UpstreamConfig up, DestinationConfig dest)
+    private static string BuildFfmpegArgs(UpstreamConfig up, DestinationConfig dest, bool includeKeys)
     {
         int srcW = Math.Max(2, up.Width);
         int srcH = Math.Max(2, up.Height);
         string pull = $"rtmp://127.0.0.1:1935/live/$name";
-        string output = Url(dest);
+        string output = Url(dest, includeKeys);
         int gop = Math.Max(1, up.Fps * Math.Max(1, dest.KeyframeSeconds));
         string audio = $"-c:a aac -b:a {dest.AudioBitrateKbps}k -ar 44100";
         string video = $"-c:v libx264 -preset veryfast -b:v {dest.VideoBitrateKbps}k -maxrate {dest.VideoBitrateKbps}k -bufsize {dest.VideoBitrateKbps * 2}k -pix_fmt yuv420p -g {gop} -sc_threshold 0";

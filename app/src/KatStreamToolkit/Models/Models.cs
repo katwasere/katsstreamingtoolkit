@@ -44,11 +44,11 @@ public class UpstreamConfig : ObservableBase
     public int Width { get => _width; set => Set(ref _width, value); }
     public int Height { get => _height; set => Set(ref _height, value); }
 
+    [JsonIgnore]
     public string StreamName { get => _streamName; set => Set(ref _streamName, value); }
 
     [JsonIgnore]
-    public double AspectRatio => _width <= 0 || _height <= 0 ? 16.0 / 9 : (double)_width / _height;
-}
+    public double AspectRatio => _width <= 0 || _height <= 0 ? 16.0 / 9 : (double)_width / _height;}
 
 public class MyChannelsConfig : ObservableBase
 {
@@ -72,7 +72,10 @@ public class AppConfig : ObservableBase
     public UpstreamConfig Upstream { get => _upstream; set => Set(ref _upstream, value); }
     public MyChannelsConfig MyChannels { get => _myChannels; set => Set(ref _myChannels, value); }
 
+    [JsonIgnore]
     public string ServerHost { get => _serverHost; set => Set(ref _serverHost, value); }
+
+    public string KeysFilePath { get; set; } = "";
     public List<DestinationConfig> Destinations { get => _destinations; set => Set(ref _destinations, value); }
     public List<OverlayConfig> Overlays { get => _overlays; set => Set(ref _overlays, value); }
 }
@@ -98,6 +101,7 @@ public class DestinationConfig : ObservableBase
     public Orientation Orientation { get => _orientation; set => Set(ref _orientation, value); }
     public PortraitStyle PortraitStyle { get => _portraitStyle; set => Set(ref _portraitStyle, value); }
     public string IngestUrl { get => _ingestUrl; set => Set(ref _ingestUrl, value); }
+    [JsonIgnore]
     public string StreamKey { get => _streamKey; set => Set(ref _streamKey, value); }
     public int VideoBitrateKbps { get => _videoBitrateKbps; set => Set(ref _videoBitrateKbps, value); }
     public int AudioBitrateKbps { get => _audioBitrateKbps; set => Set(ref _audioBitrateKbps, value); }

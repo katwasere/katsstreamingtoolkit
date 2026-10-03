@@ -35,7 +35,7 @@ flowchart LR
 
 ## Quick start
 
-1. **Build the app** (one time):
+1. **Build the app** (one time, 64-bit):
    ```powershell
    dotnet build app\KatStreamToolkit.sln -c Release
    app\src\KatStreamToolkit\bin\Release\net8.0-windows\KatStreamToolkit.exe
@@ -46,6 +46,18 @@ flowchart LR
    (~15 minutes to rent + configure a VPS; `server/VPS-SETUP.md` has the long version).
 4. OBS -> Settings -> Stream -> Custom -> `rtmp://YOUR.SERVER.IP/live` + your stream name.
 5. Go live. Configure your chat overlays in the **Chat Overlays** tab.
+
+## Secrets & portability
+
+Stream keys and the server IP live in a **separate keys file** (`secrets.json` next to
+your config by default) - `config.json` never contains them, so settings can be shared,
+committed or exported without leaking anything. On the Relay tab, *Open...* points the
+toolkit at an existing keys file and *Move to...* relocates it (USB stick / sync folder)
+for portability. On screen, key and IP fields are masked with dots until clicked into,
+and the nginx preview hides keys unless you tick *Show keys in preview* - so nothing
+sensitive flashes while streaming. The exported server bundle still contains real keys
+inside its `nginx.conf` (the relay cannot connect without them); that folder ships with
+a `.gitignore` so it can't be committed.
 
 ## Why a relay?
 

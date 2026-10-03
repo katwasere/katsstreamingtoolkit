@@ -12,6 +12,8 @@ public class MainViewModel : ObservableBase
     private string _nginxPreview = "";
     private OverlayConfig? _selectedOverlay;
     private DestinationConfig? _selectedDestination;
+    private SecretsData _secrets = new();
+    private bool _showSecretsInPreview;
 
     public event Action<OverlayConfig>? OverlayAdded;
     public event Action<OverlayConfig>? OverlayRemoved;
@@ -32,18 +34,34 @@ public class MainViewModel : ObservableBase
 
     public string BandwidthSummary { get; private set; } = "";
 
+    public bool ShowSecretsInPreview
+    {
+        get => _showSecretsInPreview;
+        set { if (Set(ref _showSecretsInPreview, value)) Refresh(); }
+    }
+
+    public string EffectiveKeysPath => string.IsNullOrWhiteSpace(Config.KeysFilePath)
+        ? SecretsStore.DefaultPath
+        : Config.KeysFilePath;
+
+    public string KeysFilePathDisplay => EffectiveKeysPath;
+
     public ICommand AddDestinationCommand { get; }
     public ICommand RemoveDestinationCommand { get; }
     public ICommand AddOverlayCommand { get; }
     public ICommand RemoveOverlayCommand { get; }
     public ICommand ExportServerCommand { get; }
     public ICommand SaveCommand { get; }
+    public ICommand OpenKeysFileCommand { get; }
+    public ICommand MoveKeysFileCommand { get; }
 
     private readonly DispatcherTimer _autoSave;
 
     public MainViewModel()
     {
         Config = ConfigStore.Load();
+        _secrets = LoadSecrets();
+        SecretsStore.Apply(Config, _secrets);
 
         foreach (var d in Config.Destinations) AttachDestination(d);
         Destinations.CollectionChanged += (_, e) =>
@@ -72,6 +90,8 @@ public class MainViewModel : ObservableBase
         }, _ => SelectedOverlay != null);
         ExportServerCommand = new RelayCommand(_ => ExportServer());
         SaveCommand = new RelayCommand(_ => Save());
+        OpenKeysFileCommand = new RelayCommand(_ => OpenKeysFile());
+        MoveKeysFileCommand = new RelayCommand(_ => MoveKeysFile());
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
         foreach (var o in Config.Overlays) Overlays.Add(o);
@@ -180,6 +200,65 @@ public class MainViewModel : ObservableBase
         {
             // Non-fatal.
         }
+        try
+        {
+            SecretsStore.SaveFromConfig(EffectiveKeysPath, Config);
+        }
+        catch
+        {
+            // Non-fatal.
+        }
+    }
+
+    private SecretsData LoadSecrets()
+    {
+        var path = EffectiveKeysPath;
+        if (File.Exists(path))
+            return SecretsStore.Load(path);
+
+        var legacy = ConfigStore.TryReadLegacySecrets();
+        if (legacy != null)
+        {
+            try { SecretsStore.Save(path, legacy); } catch { }
+            return legacy;
+        }
+        return new SecretsData();
+    }
+
+    private void OpenKeysFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Open keys file",
+            Filter = "Keys file (*.json)|*.json|All files (*.*)|*.*",
+            CheckFileExists = true,
+            InitialDirectory = Path.GetDirectoryName(EffectiveKeysPath) ?? "",
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        Config.KeysFilePath = dialog.FileName;
+        _secrets = SecretsStore.Load(dialog.FileName);
+        SecretsStore.Apply(Config, _secrets);
+        Raise(nameof(KeysFilePathDisplay));
+        Refresh();
+    }
+
+    private void MoveKeysFile()
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "Move keys file to...",
+            Filter = "Keys file (*.json)|*.json",
+            FileName = "kat-keys.json",
+            InitialDirectory = Path.GetDirectoryName(EffectiveKeysPath) ?? "",
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        SecretsStore.SaveFromConfig(dialog.FileName, Config);
+        Config.KeysFilePath = dialog.FileName;
+        _secrets = SecretsStore.Capture(Config);
+        Raise(nameof(KeysFilePathDisplay));
+        Save();
     }
 
     private void Refresh()
@@ -195,7 +274,7 @@ public class MainViewModel : ObservableBase
                            $"Server sends everything: ~{serverMbps:F1} Mbps (~{tbMonth:F1} TB/month if live 24/7).";
         Raise(nameof(BandwidthSummary));
 
-        NginxPreview = RelayConfigGenerator.GenerateNginxConf(Config);
+        NginxPreview = RelayConfigGenerator.GenerateNginxConf(Config, includeKeys: ShowSecretsInPreview);
         Save();
     }
 }

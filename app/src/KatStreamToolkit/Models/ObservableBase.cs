@@ -7,12 +7,13 @@ public abstract class ObservableBase : INotifyPropertyChanged
 {
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    protected void Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    protected bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
-            return;
+            return false;
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        return true;
     }
 
     protected void Raise([CallerMemberName] string? propertyName = null)
