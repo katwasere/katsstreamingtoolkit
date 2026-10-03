@@ -31,6 +31,14 @@ public enum ChatMode
     YouTube,
 }
 
+public enum VerifyLight
+{
+    Unknown,
+    Idle,
+    Ok,
+    Error,
+}
+
 public class UpstreamConfig : ObservableBase
 {
     private int _videoBitrateKbps = 8000;
@@ -107,7 +115,7 @@ public class DestinationConfig : ObservableBase
     public Guid Id { get => _id; set => Set(ref _id, value); }
     public string Name { get => _name; set => Set(ref _name, value); }
     public Platform Platform { get => _platform; set => Set(ref _platform, value); }
-    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+    public bool Enabled { get => _enabled; set { if (Set(ref _enabled, value)) Raise(nameof(PushLightText)); } }
     public Orientation Orientation { get => _orientation; set => Set(ref _orientation, value); }
     public PortraitStyle PortraitStyle { get => _portraitStyle; set => Set(ref _portraitStyle, value); }
     public string IngestUrl { get => _ingestUrl; set => Set(ref _ingestUrl, value); }
@@ -116,6 +124,26 @@ public class DestinationConfig : ObservableBase
     public int VideoBitrateKbps { get => _videoBitrateKbps; set => Set(ref _videoBitrateKbps, value); }
     public int AudioBitrateKbps { get => _audioBitrateKbps; set => Set(ref _audioBitrateKbps, value); }
     public int KeyframeSeconds { get => _keyframeSeconds; set => Set(ref _keyframeSeconds, value); }
+
+    private VerifyLight _pushLight = VerifyLight.Unknown;
+
+    [JsonIgnore]
+    public VerifyLight PushLight
+    {
+        get => _pushLight;
+        set { if (Set(ref _pushLight, value)) Raise(nameof(PushLightText)); }
+    }
+
+    [JsonIgnore]
+    public string PushLightText => !Enabled
+        ? "off"
+        : PushLight switch
+        {
+            VerifyLight.Ok => "pushing",
+            VerifyLight.Idle => "waiting",
+            VerifyLight.Error => "unreachable",
+            _ => "unknown",
+        };
 }
 
 public class OverlayConfig : ObservableBase

@@ -13,6 +13,7 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:BoolToVisibilityConverter x:Key="InvBoolToVis" Inverted="True" />
+        <local:LightBrushConverter x:Key="LightBrush" />
     </Window.Resources>
 
     <DockPanel>
@@ -29,11 +30,23 @@
                         <Border Background="#FF23272E" CornerRadius="8" Padding="16,12" Margin="0,0,0,12">
                             <StackPanel Orientation="Horizontal">
                                 <Border Background="#FF2D5B8A" CornerRadius="6" Padding="14,8">
-                                    <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="OBS" /><LineBreak /><Run Text="(your PC)" FontSize="10" /></TextBlock>
+                                    <StackPanel>
+                                        <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="OBS" /><LineBreak /><Run Text="(your PC)" FontSize="10" /></TextBlock>
+                                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{Binding ObsLight, Converter={StaticResource LightBrush}}" />
+                                            <TextBlock Text="{Binding ObsLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </StackPanel>
                                 </Border>
                                 <TextBlock Text="  ── one stream ──▶  " VerticalAlignment="Center" Foreground="#FF9AA0A8" />
                                 <Border Background="#FF6E3A8C" CornerRadius="6" Padding="14,8">
-                                    <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="Relay server (VPS)" /><LineBreak /><Run Text="cheap cloud box" FontSize="10" /></TextBlock>
+                                    <StackPanel>
+                                        <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="Relay server (VPS)" /><LineBreak /><Run Text="cheap cloud box" FontSize="10" /></TextBlock>
+                                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                                            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Fill="{Binding RelayLight, Converter={StaticResource LightBrush}}" />
+                                            <TextBlock Text="{Binding RelayLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </StackPanel>
                                 </Border>
                                 <TextBlock Text="  ──▶  " VerticalAlignment="Center" Foreground="#FF9AA0A8" />
                                 <ItemsControl ItemsSource="{Binding Destinations}" Margin="0">
@@ -62,6 +75,10 @@
                                                         <Run Text="{Binding VideoBitrateKbps, Mode=OneWay}" />
                                                         <Run Text=" kbps" />
                                                     </TextBlock>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{Binding PushLight, Converter={StaticResource LightBrush}}" />
+                                                        <TextBlock Text="{Binding PushLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                                    </StackPanel>
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>

@@ -60,6 +60,7 @@ public class MainViewModel : ObservableBase
 
     private readonly StringBuilder _deployLog = new();
     private int _statusBusy;
+    private int _monitorBusy;
     private bool _isRunning;
 
     public bool IsRunning { get => _isRunning; private set => Set(ref _isRunning, value); }
@@ -71,6 +72,80 @@ public class MainViewModel : ObservableBase
 
     public bool AutoStatus { get => _autoStatus; set => Set(ref _autoStatus, value); }
     private bool _autoStatus;
+
+    public VerifyLight ObsLight { get; private set; } = VerifyLight.Unknown;
+    public string ObsLightText => ObsLight switch
+    {
+        VerifyLight.Ok => "sending",
+        VerifyLight.Idle => "not sending",
+        VerifyLight.Error => "error",
+        _ => "not connected",
+    };
+
+    public VerifyLight RelayLight { get; private set; } = VerifyLight.Unknown;
+    public string RelayLightText => RelayLight switch
+    {
+        VerifyLight.Ok => "alive",
+        VerifyLight.Error => "not responding",
+        _ => "not connected",
+    };
+
+    private void ApplySnapshot(bool reachable, bool receiving)
+    {
+        RelayLight = reachable ? VerifyLight.Ok : VerifyLight.Error;
+        ObsLight = !reachable ? VerifyLight.Unknown : receiving ? VerifyLight.Ok : VerifyLight.Idle;
+        RelayStatusText = !reachable
+            ? "relay not responding - deploy the bundle first"
+            : receiving ? "receiving your stream" : "relay running, waiting for OBS";
+        foreach (var d in Destinations)
+            d.PushLight = !reachable ? VerifyLight.Unknown : receiving ? VerifyLight.Ok : VerifyLight.Idle;
+        Raise(nameof(ObsLight));
+        Raise(nameof(ObsLightText));
+        Raise(nameof(RelayLight));
+        Raise(nameof(RelayLightText));
+        Raise(nameof(RelayStatusText));
+    }
+
+    private void MonitorTick()
+    {
+        if (Interlocked.CompareExchange(ref _monitorBusy, 1, 0) != 0) return;
+        DeployTarget target;
+        try
+        {
+            target = BuildTarget();
+        }
+        catch
+        {
+            ApplySnapshot(false, false);
+            RelayLight = VerifyLight.Unknown;
+            ObsLight = VerifyLight.Unknown;
+            RelayStatusText = "not checked yet";
+            foreach (var d in Destinations) d.PushLight = VerifyLight.Unknown;
+            Raise(nameof(ObsLight));
+            Raise(nameof(ObsLightText));
+            Raise(nameof(RelayLight));
+            Raise(nameof(RelayLightText));
+            Raise(nameof(RelayStatusText));
+            Interlocked.Exchange(ref _monitorBusy, 0);
+            return;
+        }
+        var ui = TaskScheduler.FromCurrentSynchronizationContext();
+        Task.Run(() =>
+        {
+            try
+            {
+                return DeployService.FetchSnapshot(target);
+            }
+            catch
+            {
+                return (false, false);
+            }
+        }).ContinueWith(t =>
+        {
+            ApplySnapshot(t.Result.Item1, t.Result.Item2);
+            Interlocked.Exchange(ref _monitorBusy, 0);
+        }, ui);
+    }
 
     public ICommand AddDestinationCommand { get; }
     public ICommand RemoveDestinationCommand { get; }
@@ -86,6 +161,7 @@ public class MainViewModel : ObservableBase
 
     private readonly DispatcherTimer _autoSave;
     private readonly DispatcherTimer _autoStatusTimer;
+    private readonly DispatcherTimer _monitorTimer;
 
     public MainViewModel()
     {
@@ -143,6 +219,11 @@ public class MainViewModel : ObservableBase
         _autoStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         _autoStatusTimer.Tick += (_, _) => { if (AutoStatus && !IsRunning) RefreshStatus(); };
         _autoStatusTimer.Start();
+
+        _monitorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _monitorTimer.Tick += (_, _) => MonitorTick();
+        _monitorTimer.Start();
+        MonitorTick();
 
         Refresh();
     }

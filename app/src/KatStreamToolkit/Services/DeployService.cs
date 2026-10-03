@@ -70,8 +70,7 @@ public static class DeployService
 
         using (var sftp = ConnectSftp(t))
         {
-            if (!sftp.Exists(t.RemotePath))
-                sftp.CreateDirectory(t.RemotePath);
+            EnsureRemoteDir(sftp, client, t.RemotePath, log);
             foreach (var file in Directory.GetFiles(temp))
             {
                 using var fs = File.OpenRead(file);
@@ -81,7 +80,7 @@ public static class DeployService
         }
         log("upload complete");
 
-        var (code, output) = Run(client, $"cd '{t.RemotePath}' && docker compose up -d --build 2>&1", 600);
+        var (code, output) = Run(client, $"cd '{t.RemotePath}' && sudo docker compose up -d --build 2>&1", 600);
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             log("  " + line);
         if (code != 0)
@@ -89,17 +88,42 @@ public static class DeployService
         log("deploy complete - relay is running");
     }
 
+    // SFTP cannot use sudo; on sudo-only servers (e.g. Oracle Linux's opc user) we
+    // create the folder through the SSH session instead.
+    private static void EnsureRemoteDir(SftpClient sftp, SshClient ssh, string remotePath, Action<string> log)
+    {
+        if (sftp.Exists(remotePath))
+            return;
+        try
+        {
+            sftp.CreateDirectory(remotePath);
+        }
+        catch
+        {
+            log("folder needs admin rights - creating it with sudo...");
+            var (code, output) = Run(ssh, $"sudo mkdir -p '{remotePath}' && sudo chown \"$(id -un)\" '{remotePath}'");
+            if (code != 0)
+                throw new Exception($"could not create {remotePath}: {output}");
+        }
+    }
+
     // Reads the relay's stats endpoint through the server's loopback interface,
     // so nothing (not even the stats) is exposed to the internet.
     public static string FetchStatus(DeployTarget t)
+    {
+        var (reachable, receiving) = FetchSnapshot(t);
+        if (!reachable)
+            return "relay not responding - deploy the bundle first";
+        return receiving ? "receiving your stream" : "relay running, waiting for OBS";
+    }
+
+    public static (bool Reachable, bool Receiving) FetchSnapshot(DeployTarget t)
     {
         using var client = ConnectSsh(t);
         var (_, output) = Run(client,
             "curl -s --max-time 3 http://127.0.0.1:8080/stat || wget -qO- -T 3 http://127.0.0.1:8080/stat || true", 20);
         if (string.IsNullOrWhiteSpace(output) || !output.Contains("<rtmp"))
-            return "relay not responding - deploy the bundle first";
-        return output.Contains("<publisher>")
-            ? "receiving your stream"
-            : "relay running, waiting for OBS";
+            return (false, false);
+        return (true, output.Contains("<publishing"));
     }
 }
