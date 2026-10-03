@@ -40,6 +40,7 @@ public static class ServerExporter
             restart: unless-stopped
             ports:
               - "1935:1935"
+              - "127.0.0.1:8080:8080"
             logging:
               driver: json-file
               options:
@@ -86,10 +87,13 @@ public static class ServerExporter
         sb.AppendLine($"- Stream key: `{cfg.Upstream.StreamName}` (this is your secret password - anything can push with it)");
         sb.AppendLine();
         sb.AppendLine("## Changing destinations later");
-        sb.AppendLine("Edit destinations in the toolkit, re-export to this folder, then on the server:");
-        sb.AppendLine("```bash");
-        sb.AppendLine("cd /opt/kat-relay && docker compose up -d --build");
-        sb.AppendLine("```");
+        sb.AppendLine("Edit destinations in the toolkit, then click 'Deploy to server' on the Deploy tab");
+        sb.AppendLine("(or re-export + upload + `docker compose up -d --build` by hand).");
+        sb.AppendLine();
+        sb.AppendLine("## Health status");
+        sb.AppendLine("The relay exposes stats on the server's loopback only (127.0.0.1:8080).");
+        sb.AppendLine("The toolkit's Deploy tab reads it over SSH - nothing is open to the internet.");
+        sb.AppendLine("Quick manual check: ssh in and run `curl -s http://127.0.0.1:8080/health`.");
         sb.AppendLine();
         sb.AppendLine("## Traffic math");
         sb.AppendLine($"- Your home upload sends one stream: ~{upMbps:F1} Mbps (~{upMbps * 0.45:F1} GB/hour).");

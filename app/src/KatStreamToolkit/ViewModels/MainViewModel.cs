@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text;
 using System.Windows;
 using KatStreamToolkit.Models;
 using KatStreamToolkit.Services;
@@ -46,6 +47,31 @@ public class MainViewModel : ObservableBase
 
     public string KeysFilePathDisplay => EffectiveKeysPath;
 
+    public string SshPassword
+    {
+        get => _secrets.SshPassword;
+        set
+        {
+            if (_secrets.SshPassword == value) return;
+            _secrets.SshPassword = value;
+            Save();
+        }
+    }
+
+    private readonly StringBuilder _deployLog = new();
+    private int _statusBusy;
+    private bool _isRunning;
+
+    public bool IsRunning { get => _isRunning; private set => Set(ref _isRunning, value); }
+
+    public string DeployLog => _deployLog.ToString();
+
+    public string RelayStatusText { get => _relayStatusText; private set => Set(ref _relayStatusText, value); }
+    private string _relayStatusText = "not checked yet";
+
+    public bool AutoStatus { get => _autoStatus; set => Set(ref _autoStatus, value); }
+    private bool _autoStatus;
+
     public ICommand AddDestinationCommand { get; }
     public ICommand RemoveDestinationCommand { get; }
     public ICommand AddOverlayCommand { get; }
@@ -54,8 +80,12 @@ public class MainViewModel : ObservableBase
     public ICommand SaveCommand { get; }
     public ICommand OpenKeysFileCommand { get; }
     public ICommand MoveKeysFileCommand { get; }
+    public ICommand TestConnectionCommand { get; }
+    public ICommand DeployCommand { get; }
+    public ICommand RefreshStatusCommand { get; }
 
     private readonly DispatcherTimer _autoSave;
+    private readonly DispatcherTimer _autoStatusTimer;
 
     public MainViewModel()
     {
@@ -92,6 +122,16 @@ public class MainViewModel : ObservableBase
         SaveCommand = new RelayCommand(_ => Save());
         OpenKeysFileCommand = new RelayCommand(_ => OpenKeysFile());
         MoveKeysFileCommand = new RelayCommand(_ => MoveKeysFile());
+        TestConnectionCommand = new RelayCommand(_ => RunBackground(log => DeployService.TestConnection(BuildTarget(), log)),
+            _ => !IsRunning);
+        DeployCommand = new RelayCommand(_ => RunBackground(log =>
+        {
+            DeployService.Deploy(Config, BuildTarget(), log);
+            log("checking relay status...");
+            RelayStatusText = DeployService.FetchStatus(BuildTarget());
+            Raise(nameof(RelayStatusText));
+        }), _ => !IsRunning);
+        RefreshStatusCommand = new RelayCommand(_ => RefreshStatus());
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
         foreach (var o in Config.Overlays) Overlays.Add(o);
@@ -99,6 +139,10 @@ public class MainViewModel : ObservableBase
         _autoSave = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
         _autoSave.Tick += (_, _) => Save();
         _autoSave.Start();
+
+        _autoStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _autoStatusTimer.Tick += (_, _) => { if (AutoStatus && !IsRunning) RefreshStatus(); };
+        _autoStatusTimer.Start();
 
         Refresh();
     }
@@ -188,6 +232,99 @@ public class MainViewModel : ObservableBase
         }
     }
 
+    private DeployTarget BuildTarget()
+    {
+        if (string.IsNullOrWhiteSpace(Config.ServerHost))
+            throw new Exception("set your server host (IP) first - Relay tab or the field above");
+        if (string.IsNullOrWhiteSpace(Config.SshUser))
+            throw new Exception("set your SSH user first (usually 'root')");
+        return new DeployTarget(
+            Config.ServerHost.Trim(),
+            Config.SshUser.Trim(),
+            Config.SshUseKey,
+            SshPassword,
+            Config.SshKeyPath,
+            string.IsNullOrWhiteSpace(Config.RemotePath) ? "/opt/kat-relay" : Config.RemotePath.Trim());
+    }
+
+    private void Log(string message)
+    {
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            _deployLog.AppendLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+            if (_deployLog.Length > 16000)
+                _deployLog.Remove(0, _deployLog.Length - 12000);
+            Raise(nameof(DeployLog));
+        });
+    }
+
+    private void RunBackground(Action<Action<string>> work)
+    {
+        if (IsRunning) return;
+        IsRunning = true;
+        try
+        {
+            var target = BuildTarget();
+            Task.Run(() =>
+            {
+                try
+                {
+                    work(Log);
+                }
+                catch (Exception ex)
+                {
+                    Log("[error] " + ex.Message);
+                }
+                finally
+                {
+                    Application.Current?.Dispatcher.BeginInvoke(() =>
+                    {
+                        IsRunning = false;
+                        CommandManager.InvalidateRequerySuggested();
+                    });
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("[error] " + ex.Message);
+            IsRunning = false;
+        }
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void RefreshStatus()
+    {
+        if (Interlocked.CompareExchange(ref _statusBusy, 1, 0) != 0) return;
+        DeployTarget target;
+        try
+        {
+            target = BuildTarget();
+        }
+        catch (Exception ex)
+        {
+            RelayStatusText = ex.Message;
+            Interlocked.Exchange(ref _statusBusy, 0);
+            return;
+        }
+        var ui = TaskScheduler.FromCurrentSynchronizationContext();
+        Task.Run(() =>
+        {
+            try
+            {
+                return DeployService.FetchStatus(target);
+            }
+            catch (Exception ex)
+            {
+                return "status check failed: " + ex.Message;
+            }
+        }).ContinueWith(t =>
+        {
+            RelayStatusText = t.Result;
+            Interlocked.Exchange(ref _statusBusy, 0);
+        }, ui);
+    }
+
     public void Save()
     {
         Config.Destinations = Destinations.ToList();
@@ -202,7 +339,7 @@ public class MainViewModel : ObservableBase
         }
         try
         {
-            SecretsStore.SaveFromConfig(EffectiveKeysPath, Config);
+            SecretsStore.SaveFromConfig(EffectiveKeysPath, Config, _secrets);
         }
         catch
         {
@@ -254,7 +391,7 @@ public class MainViewModel : ObservableBase
         };
         if (dialog.ShowDialog() != true) return;
 
-        SecretsStore.SaveFromConfig(dialog.FileName, Config);
+        SecretsStore.SaveFromConfig(dialog.FileName, Config, _secrets);
         Config.KeysFilePath = dialog.FileName;
         _secrets = SecretsStore.Capture(Config);
         Raise(nameof(KeysFilePathDisplay));

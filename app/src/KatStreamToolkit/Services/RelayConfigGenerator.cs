@@ -57,6 +57,17 @@ public static class RelayConfigGenerator
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("# Local-only health/stats endpoints. docker-compose binds this to the");
+        sb.AppendLine("# server's loopback, so the toolkit reads it over SSH and the internet cannot.");
+        sb.AppendLine("http {");
+        sb.AppendLine("    server {");
+        sb.AppendLine("        listen 8080;");
+        sb.AppendLine();
+        sb.AppendLine("        location = /health { return 200 \"kat-relay ok\\n\"; }");
+        sb.AppendLine("        location /stat { rtmp_stat all; }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
         return sb.ToString();
     }
 

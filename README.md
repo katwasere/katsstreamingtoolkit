@@ -28,7 +28,7 @@ flowchart LR
 
 | Piece | What it is | Where |
 |---|---|---|
-| **Toolkit app** | Windows desktop app (C#/WPF, .NET 8): visual routing, destination editor, overlay manager, server-config generator/exporter | `app/` |
+| **Toolkit app** | Windows desktop app (C#/WPF, .NET 8, x64): visual routing, destination editor, overlay manager, server-config generator, one-click SSH deploy with relay health status | `app/` |
 | **Chat overlays** | Transparent always-on-top windows; merged or per-platform chat; Twitch (no login), Kick, YouTube connectors included; `Ctrl+Alt+C` locks/unlocks all | built into the app |
 | **Relay** | nginx-rtmp + ffmpeg in Docker: single upstream in, per-platform pushes + portrait transcodes out | `server/` (or let the app export it) |
 | **Setup guide** | Zero-to-live VPS walkthrough written for non-ops people | `server/VPS-SETUP.md` |
@@ -42,8 +42,9 @@ flowchart LR
    ```
 2. In the app, fill in each destination's **ingest URL + stream key** (from the
    platform's dashboard) and toggle it on.
-3. **Export server bundle** -> follow `SETUP.md` inside the exported folder
-   (~15 minutes to rent + configure a VPS; `server/VPS-SETUP.md` has the long version).
+3. **Deploy**: either click **Deploy to server** on the Deploy tab (needs a VPS with
+   Docker installed and your SSH user/password), or export the bundle and follow
+   `SETUP.md` inside it (~15 minutes; `server/VPS-SETUP.md` has the long version).
 4. OBS -> Settings -> Stream -> Custom -> `rtmp://YOUR.SERVER.IP/live` + your stream name.
 5. Go live. Configure your chat overlays in the **Chat Overlays** tab.
 

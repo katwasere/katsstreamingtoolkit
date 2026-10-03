@@ -76,6 +76,16 @@ public class AppConfig : ObservableBase
     public string ServerHost { get => _serverHost; set => Set(ref _serverHost, value); }
 
     public string KeysFilePath { get; set; } = "";
+
+    private string _sshUser = "";
+    private bool _sshUseKey;
+    private string _sshKeyPath = "";
+    private string _remotePath = "/opt/kat-relay";
+
+    public string SshUser { get => _sshUser; set => Set(ref _sshUser, value); }
+    public bool SshUseKey { get => _sshUseKey; set => Set(ref _sshUseKey, value); }
+    public string SshKeyPath { get => _sshKeyPath; set => Set(ref _sshKeyPath, value); }
+    public string RemotePath { get => _remotePath; set => Set(ref _remotePath, value); }
     public List<DestinationConfig> Destinations { get => _destinations; set => Set(ref _destinations, value); }
     public List<OverlayConfig> Overlays { get => _overlays; set => Set(ref _overlays, value); }
 }

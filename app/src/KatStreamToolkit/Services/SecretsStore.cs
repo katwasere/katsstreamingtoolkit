@@ -11,6 +11,7 @@ public class SecretsData
     public Dictionary<string, string>? DestinationKeys { get; set; }
     public string UpstreamStreamName { get; set; } = "";
     public string ServerHost { get; set; } = "";
+    public string SshPassword { get; set; } = "";
 }
 
 public static class SecretsStore
@@ -58,7 +59,13 @@ public static class SecretsStore
         ServerHost = cfg.ServerHost,
     };
 
-    public static void SaveFromConfig(string path, AppConfig cfg) => Save(path, Capture(cfg));
+    public static void SaveFromConfig(string path, AppConfig cfg, SecretsData? previous = null)
+    {
+        var data = Capture(cfg);
+        if (previous != null)
+            data.SshPassword = previous.SshPassword;
+        Save(path, data);
+    }
 
     public static void Apply(AppConfig cfg, SecretsData data)
     {

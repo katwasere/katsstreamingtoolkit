@@ -12,6 +12,7 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <local:BoolToVisibilityConverter x:Key="InvBoolToVis" Inverted="True" />
     </Window.Resources>
 
     <DockPanel>
@@ -252,6 +253,63 @@
                     <TextBox Grid.Row="1" Text="{Binding NginxPreview, Mode=OneWay}" IsReadOnly="True"
                              FontFamily="Consolas" FontSize="12" Background="#FF1B1E24" Foreground="#FFD8DEE9"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextChanged="PreviewBox_TextChanged" />
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Deploy">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="One-click deploy - no terminal needed" FontSize="15" FontWeight="Bold" Margin="0,0,0,8" />
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="Server host (IP):" Width="180" VerticalAlignment="Center" />
+                                <local:SecretBox Width="220" SecretText="{Binding Config.ServerHost}" VerticalAlignment="Center" />
+                                <TextBlock Text="   SSH user (usually root):" Margin="16,0,0,0" VerticalAlignment="Center" />
+                                <TextBox Width="140" Text="{Binding Config.SshUser}" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                                <CheckBox Content="Use SSH key file instead of password" IsChecked="{Binding Config.SshUseKey}" VerticalAlignment="Center" />
+                                <TextBlock Text="  SSH password:" Margin="16,0,0,0" VerticalAlignment="Center"
+                                           Visibility="{Binding Config.SshUseKey, Converter={StaticResource InvBoolToVis}}" />
+                                <local:SecretBox Width="220" SecretText="{Binding SshPassword}" VerticalAlignment="Center"
+                                                 Visibility="{Binding Config.SshUseKey, Converter={StaticResource InvBoolToVis}}" />
+                                <TextBlock Text="  Key file path:" Margin="16,0,0,0" VerticalAlignment="Center"
+                                           Visibility="{Binding Config.SshUseKey, Converter={StaticResource BoolToVis}}" />
+                                <TextBox Width="300" Text="{Binding Config.SshKeyPath}" VerticalAlignment="Center"
+                                         Visibility="{Binding Config.SshUseKey, Converter={StaticResource BoolToVis}}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                                <TextBlock Text="Remote folder:" Width="180" VerticalAlignment="Center" />
+                                <TextBox Width="220" Text="{Binding Config.RemotePath}" VerticalAlignment="Center" />
+                                <TextBlock Text="  first time? rent a VPS + install Docker once (server/VPS-SETUP.md steps 1-2), then this tab does the rest"
+                                           FontSize="11" Margin="12,0,0,0" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <DockPanel Grid.Row="1" Margin="0,0,0,8">
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding RelayStatusText, Mode=OneWay}" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" Foreground="#FF8FD694" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Test connection" Command="{Binding TestConnectionCommand}" Padding="10,3" />
+                            <Button Content="Deploy to server" Command="{Binding DeployCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            <Button Content="Refresh status" Command="{Binding RefreshStatusCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            <CheckBox Content="auto (10s)" IsChecked="{Binding AutoStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding IsRunning, StringFormat=busy: {0}}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                       Foreground="#FF9AA0A8" Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
+                    </DockPanel>
+
+                    <TextBox Grid.Row="2" Text="{Binding DeployLog, Mode=OneWay}" IsReadOnly="True"
+                             FontFamily="Consolas" FontSize="12" Background="#FF1B1E24" Foreground="#FFD8DEE9"
+                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                             TextChanged="PreviewBox_TextChanged" />
                 </Grid>
             </TabItem>
 

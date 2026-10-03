@@ -41,3 +41,14 @@ rtmp {
         }
     }
 }
+
+# Local-only health/stats endpoints. docker-compose binds 127.0.0.1:8080 on the
+# host, so only the toolkit (over SSH) or someone logged into the server can read it.
+http {
+    server {
+        listen 8080;
+
+        location = /health { return 200 "kat-relay ok\n"; }
+        location /stat { rtmp_stat all; }
+    }
+}
