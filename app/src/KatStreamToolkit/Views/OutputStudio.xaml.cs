@@ -109,6 +109,7 @@ public partial class OutputStudio : UserControl
         {
             _watchedDestination.PropertyChanged -= Destination_PropertyChanged;
             _watchedDestination.Layers.CollectionChanged -= Layers_CollectionChanged;
+            foreach (var layer in _watchedDestination.Layers) UnhookLayer(layer);
         }
         _watchedDestination = selected;
         _selectedLayer = null;
@@ -125,6 +126,7 @@ public partial class OutputStudio : UserControl
     private void Layers_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         if (e.NewItems != null) foreach (OutputLayer l in e.NewItems) HookLayer(l);
+        if (e.OldItems != null) foreach (OutputLayer l in e.OldItems) UnhookLayer(l);
         if (_selectedLayer is not null && e.OldItems?.Contains(_selectedLayer) == true) _selectedLayer = null;
         UpdateLayerUi();
         UpdatePreview();
@@ -133,11 +135,21 @@ public partial class OutputStudio : UserControl
     private void HookLayer(OutputLayer layer)
     {
         if (!_hookedLayers.Add(layer.Id)) return;
-        layer.PropertyChanged += (_, _) =>
-        {
-            UpdateLayerUi();
-            UpdatePreview();
-        };
+        layer.PropertyChanged += Layer_PropertyChanged;
+    }
+
+    // The old code never detached: the Id set and the handler closures grew
+    // forever across long sessions.
+    private void UnhookLayer(OutputLayer layer)
+    {
+        if (!_hookedLayers.Remove(layer.Id)) return;
+        layer.PropertyChanged -= Layer_PropertyChanged;
+    }
+
+    private void Layer_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        UpdateLayerUi();
+        UpdatePreview();
     }
 
     private void Vm_PropertyChanged(object? sender, PropertyChangedEventArgs e)

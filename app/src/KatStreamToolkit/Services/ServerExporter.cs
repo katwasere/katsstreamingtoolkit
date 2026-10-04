@@ -6,13 +6,13 @@ namespace KatStreamToolkit.Services;
 
 public static class ServerExporter
 {
-    public static void Export(string folder, AppConfig cfg)
+    public static void Export(string folder, AppConfig cfg, Action<string>? log = null)
     {
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "Dockerfile"), Dockerfile);
         File.WriteAllText(Path.Combine(folder, "docker-compose.yml"), ComposeYml);
         File.WriteAllText(Path.Combine(folder, "nginx.conf"), RelayConfigGenerator.GenerateNginxConf(cfg));
-        File.WriteAllText(Path.Combine(folder, "SETUP.md"), BuildSetupGuide(cfg));
+        File.WriteAllText(Path.Combine(folder, "SETUP.md"), BuildSetupGuide(cfg, folder));
         // Cloud VPSs (Oracle in particular) advertise a giant NIC MTU while the
         // internet path is 1500, and dropped ICMP "fragmentation needed" then
         // blackholes every large RTMP packet: OBS connects and dies a few
@@ -26,15 +26,22 @@ public static class ServerExporter
             "nameserver 169.254.169.254\nnameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3 rotate\n");
         // Keys live inside nginx.conf; keep them out of any git repo.
         File.WriteAllText(Path.Combine(folder, ".gitignore"), "nginx.conf\n");
-        ExportCustomBackgrounds(folder, cfg);
+        ExportCustomBackgrounds(folder, cfg, log);
     }
 
-    private static void ExportCustomBackgrounds(string folder, AppConfig cfg)
+    // A missing image no longer aborts the entire export/deploy: the file is
+    // skipped with a warning and the rest of the bundle still ships.
+    private static void ExportCustomBackgrounds(string folder, AppConfig cfg, Action<string>? log)
     {
+        void Warn(string message) => log?.Invoke("  warning: " + message);
+
         foreach (var dest in cfg.Destinations.Where(d => d.PortraitStyle == PortraitStyle.Custom && !string.IsNullOrWhiteSpace(d.CustomBackgroundPath)))
         {
             if (!File.Exists(dest.CustomBackgroundPath))
-                throw new Exception($"custom background for '{dest.Name}' not found: {dest.CustomBackgroundPath}");
+            {
+                Warn($"custom background for '{dest.Name}' not found on disk, skipping: {dest.CustomBackgroundPath}");
+                continue;
+            }
             string backgrounds = Path.Combine(folder, "backgrounds");
             Directory.CreateDirectory(backgrounds);
             File.Copy(dest.CustomBackgroundPath, Path.Combine(backgrounds, RelayConfigGenerator.BackgroundFileName(dest)), true);
@@ -45,7 +52,10 @@ public static class ServerExporter
             foreach (var layer in dest.Layers.Where(l => l.Type == LayerType.Image && !string.IsNullOrWhiteSpace(l.Path)))
             {
                 if (!File.Exists(layer.Path))
-                    throw new Exception($"overlay image for '{dest.Name}' / '{layer.Name}' not found: {layer.Path}");
+                {
+                    Warn($"overlay image for '{dest.Name}' / '{layer.Name}' not found on disk, skipping: {layer.Path}");
+                    continue;
+                }
                 string backgrounds = Path.Combine(folder, "backgrounds");
                 Directory.CreateDirectory(backgrounds);
                 File.Copy(layer.Path, Path.Combine(backgrounds, RelayConfigGenerator.OverlayFileName(layer)), true);
@@ -132,10 +142,14 @@ public static class ServerExporter
         echo "MTU/MSS hardening applied: MSS clamp on OUTPUT+FORWARD, tcp_mtu_probing=1, re-applied on boot."
         """;
 
-    private static string BuildSetupGuide(AppConfig cfg)
+    private static string BuildSetupGuide(AppConfig cfg, string exportFolder)
     {
         var sb = new StringBuilder();
         string host = string.IsNullOrWhiteSpace(cfg.ServerHost) ? "YOUR.SERVER.IP" : cfg.ServerHost.Trim();
+        string sshUser = string.IsNullOrWhiteSpace(cfg.SshUser) ? "root" : cfg.SshUser.Trim();
+        string remotePath = string.IsNullOrWhiteSpace(cfg.RemotePath) ? "/opt/kat-relay" : cfg.RemotePath.Trim();
+        // The exported folder itself (not the app's current working directory).
+        string localFolder = Path.GetFullPath(exportFolder);
         double upMbps = cfg.Upstream.VideoBitrateKbps / 1000.0 * 1.1;
         double serverMbps = cfg.Destinations.Where(d => d.Enabled).Sum(d => (d.VideoBitrateKbps + d.AudioBitrateKbps) / 1000.0) * 1.1;
 
@@ -155,18 +169,18 @@ public static class ServerExporter
         sb.AppendLine();
         sb.AppendLine("## 3. Upload this folder to the server");
         sb.AppendLine("```bash");
-        sb.AppendLine($"scp -r \"{Directory.GetCurrentDirectory()}\" root@{host}:/opt/kat-relay");
+        sb.AppendLine($"scp -r \"{localFolder}\" {sshUser}@{host}:{remotePath}");
         sb.AppendLine("```");
         sb.AppendLine("Or use WinSCP (drag and drop, GUI).");
         sb.AppendLine();
         sb.AppendLine("## 4. Start it");
         sb.AppendLine("```bash");
-        sb.AppendLine("cd /opt/kat-relay && docker compose up -d --build");
+        sb.AppendLine($"cd {remotePath} && docker compose up -d --build");
         sb.AppendLine("docker compose logs -f   # Ctrl+C to stop watching");
         sb.AppendLine("```");
         sb.AppendLine("If you deploy by hand, also run the network hardening once (the toolkit's 'Deploy to server' button runs it on every deploy):");
         sb.AppendLine("```bash");
-        sb.AppendLine("sudo sh /opt/kat-relay/server-hardening.sh   # fixes OBS connecting then dropping a few seconds in (cloud MTU mismatch)");
+        sb.AppendLine($"sudo sh {remotePath}/server-hardening.sh   # fixes OBS connecting then dropping a few seconds in (cloud MTU mismatch)");
         sb.AppendLine("```");
         sb.AppendLine();
         sb.AppendLine("## 5. Point OBS at it");

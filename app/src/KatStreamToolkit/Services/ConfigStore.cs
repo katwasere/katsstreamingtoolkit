@@ -51,8 +51,22 @@ public static class ConfigStore
 
     public static void Save(AppConfig config)
     {
+        // Write temp + replace: the old truncate-then-write left a truncated
+        // config.json behind on a crash mid-write, which Load() then silently
+        // swapped for defaults. File.Replace is atomic on NTFS and keeps a .bak.
         var json = JsonSerializer.Serialize(config, Options);
-        File.WriteAllText(FilePath, json);
+        AtomicWrite(FilePath, json);
+    }
+
+    internal static void AtomicWrite(string path, string content)
+    {
+        string tmp = path + ".tmp";
+        string bak = path + ".bak";
+        File.WriteAllText(tmp, content);
+        if (File.Exists(path))
+            File.Replace(tmp, path, bak);
+        else
+            File.Move(tmp, path);
     }
 
     // One-time migration: older builds stored keys inside config.json.
@@ -65,7 +79,10 @@ public static class ConfigStore
                 return null;
             using var doc = JsonDocument.Parse(File.ReadAllText(FilePath));
             var root = doc.RootElement;
-            var data = new SecretsData();
+            // DestinationKeys has no initializer (stays null) - the old inline
+            // `data.DestinationKeys![id] = key!` threw NRE inside the try, was
+            // swallowed, and legacy keys were silently never migrated.
+            var data = new SecretsData { DestinationKeys = new Dictionary<string, string>() };
 
             if (root.TryGetProperty("ServerHost", out var host) && host.ValueKind == JsonValueKind.String)
                 data.ServerHost = host.GetString() ?? "";

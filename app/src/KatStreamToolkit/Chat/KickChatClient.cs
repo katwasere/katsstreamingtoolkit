@@ -39,64 +39,74 @@ public sealed class KickChatClient : IChatClient
     public void Start()
     {
         _cts = new CancellationTokenSource();
-        var thread = new Thread(() => Run(_cts.Token)) { IsBackground = true, Name = "kick-chat" };
+        var cts = _cts;
+        var thread = new Thread(() => Run(cts)) { IsBackground = true, Name = "kick-chat" };
         thread.Start();
     }
 
-    private async void Run(CancellationToken ct)
+    private async void Run(CancellationTokenSource cts)
     {
+        CancellationToken ct = cts.Token;
         string? roomId = _manualChatroomId;
-        while (!ct.IsCancellationRequested)
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                if (roomId == null)
+                try
                 {
-                    StatusChanged?.Invoke("resolving channel...");
-                    roomId = await ResolveChatroomId(_channel, ct)
-                             ?? throw new Exception("could not resolve channel id (Kick may be blocking - paste the chatroom id in the toolkit)");
-                }
-
-                StatusChanged?.Invoke("connecting...");
-                using var ws = new System.Net.WebSockets.ClientWebSocket();
-                ct.Register(() => ws.Dispose());
-                await ws.ConnectAsync(new Uri(PusherUrl), ct);
-                StatusChanged?.Invoke("connected");
-
-                var subscribe = JsonSerializer.Serialize(new
-                {
-                    @event = "pusher:subscribe",
-                    data = new { auth = "", channel = $"chatrooms.{roomId}.v2" },
-                });
-                await ws.SendAsync(Encoding.UTF8.GetBytes(subscribe),
-                    System.Net.WebSockets.WebSocketMessageType.Text, true, ct);
-
-                var buffer = new byte[64 * 1024];
-                while (!ct.IsCancellationRequested && ws.State == System.Net.WebSockets.WebSocketState.Open)
-                {
-                    using var ms = new MemoryStream();
-                    System.Net.WebSockets.WebSocketReceiveResult result;
-                    do
+                    if (roomId == null)
                     {
-                        result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                        if (result.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
-                            throw new Exception("socket closed");
-                        ms.Write(buffer, 0, result.Count);
-                    } while (!result.EndOfMessage);
+                        StatusChanged?.Invoke("resolving channel...");
+                        roomId = await ResolveChatroomId(_channel, ct)
+                                 ?? throw new Exception("could not resolve channel id (Kick may be blocking - paste the chatroom id in the toolkit)");
+                    }
+
+                    StatusChanged?.Invoke("connecting...");
+                    using var ws = new System.Net.WebSockets.ClientWebSocket();
+                    using var closeOnCancel = ct.Register(() => ws.Dispose());
+                    await ws.ConnectAsync(new Uri(PusherUrl), ct);
+                    StatusChanged?.Invoke("connected");
+
+                    var subscribe = JsonSerializer.Serialize(new
+                    {
+                        @event = "pusher:subscribe",
+                        data = new { auth = "", channel = $"chatrooms.{roomId}.v2" },
+                    });
+                    await ws.SendAsync(Encoding.UTF8.GetBytes(subscribe),
+                        System.Net.WebSockets.WebSocketMessageType.Text, true, ct);
+
+                    var buffer = new byte[64 * 1024];
+                    while (!ct.IsCancellationRequested && ws.State == System.Net.WebSockets.WebSocketState.Open)
+                    {
+                        using var ms = new MemoryStream();
+                        System.Net.WebSockets.WebSocketReceiveResult result;
+                        do
+                        {
+                            result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                            if (result.MessageType == System.Net.WebSockets.WebSocketMessageType.Close)
+                                throw new Exception("socket closed");
+                            ms.Write(buffer, 0, result.Count);
+                        } while (!result.EndOfMessage);
 
 
-                    HandleFrame(Encoding.UTF8.GetString(ms.ToArray()), ws, ct);
+                        HandleFrame(Encoding.UTF8.GetString(ms.ToArray()), ws, ct);
+                    }
                 }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    StatusChanged?.Invoke($"reconnecting ({ex.Message})");
+                }
+                try { await Task.Delay(TimeSpan.FromSeconds(5), ct); } catch (OperationCanceledException) { return; }
             }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                StatusChanged?.Invoke($"reconnecting ({ex.Message})");
-            }
-            try { await Task.Delay(TimeSpan.FromSeconds(5), ct); } catch (OperationCanceledException) { return; }
+        }
+        finally
+        {
+            // Disposed here (on the loop's own thread) - see TwitchChatClient.Run.
+            try { cts.Dispose(); } catch { }
         }
     }
 
@@ -196,8 +206,9 @@ public sealed class KickChatClient : IChatClient
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        // Cancel only; the Run loop disposes the CTS itself (see Run).
+        var cts = _cts;
         _cts = null;
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 }

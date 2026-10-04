@@ -78,7 +78,10 @@ public partial class MainWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2;
-        RegisterHotKey(hwnd, HotkeyId, MOD_CONTROL | MOD_ALT, 0x43);
+        // If another app already owns Ctrl+Alt+C the registration silently failed
+        // and the lock hotkey did nothing - say so instead.
+        if (!RegisterHotKey(hwnd, HotkeyId, MOD_CONTROL | MOD_ALT, 0x43))
+            Title += "  (Ctrl+Alt+C is taken by another app - the overlay lock hotkey is off)";
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)

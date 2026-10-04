@@ -49,15 +49,26 @@ public static class SecretsStore
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(data, Options));
+        // Atomic write: this file holds every stream key - a torn write must not
+        // leave it unreadable.
+        ConfigStore.AtomicWrite(path, JsonSerializer.Serialize(data, Options));
     }
 
-    public static SecretsData Capture(AppConfig cfg) => new()
+    public static SecretsData Capture(AppConfig cfg)
     {
-        DestinationKeys = cfg.Destinations.ToDictionary(d => d.Id.ToString(), d => d.StreamKey),
-        UpstreamStreamName = cfg.Upstream.StreamName,
-        ServerHost = cfg.ServerHost,
-    };
+        // Built with an indexer instead of ToDictionary: a duplicated destination
+        // Id (possible via hand-edited config) threw ArgumentException inside
+        // Save, which is swallowed, and secrets silently stopped persisting.
+        var keys = new Dictionary<string, string>();
+        foreach (var dest in cfg.Destinations)
+            keys[dest.Id.ToString()] = dest.StreamKey;
+        return new SecretsData
+        {
+            DestinationKeys = keys,
+            UpstreamStreamName = cfg.Upstream.StreamName,
+            ServerHost = cfg.ServerHost,
+        };
+    }
 
     public static void SaveFromConfig(string path, AppConfig cfg, SecretsData? previous = null)
     {

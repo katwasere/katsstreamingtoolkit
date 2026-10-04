@@ -40,46 +40,61 @@ public sealed partial class YouTubeChatClient : IChatClient
     public void Start()
     {
         _cts = new CancellationTokenSource();
-        var thread = new Thread(() => Run(_cts.Token)) { IsBackground = true, Name = "yt-chat" };
+        var cts = _cts;
+        var thread = new Thread(() => Run(cts)) { IsBackground = true, Name = "yt-chat" };
         thread.Start();
     }
 
-    private async void Run(CancellationToken ct)
+    private async void Run(CancellationTokenSource cts)
     {
-        while (!ct.IsCancellationRequested)
+        CancellationToken ct = cts.Token;
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                StatusChanged?.Invoke("finding live stream...");
-                string videoId = await ResolveVideoId(_input, ct)
-                                 ?? throw new Exception("no live stream found (is the channel live?)");
-
-                StatusChanged?.Invoke("opening chat...");
-                string continuation = await GetInitialContinuation(videoId, ct)
-                                      ?? throw new Exception("chat not available for this stream");
-
-                while (!ct.IsCancellationRequested)
+                try
                 {
-                    StatusChanged?.Invoke("connected");
-                    var (nextToken, delay) = await PollOnce(continuation, ct);
-                    if (nextToken == null)
+                    StatusChanged?.Invoke("finding live stream...");
+                    string videoId = await ResolveVideoId(_input, ct)
+                                     ?? throw new Exception("no live stream found (is the channel live?)");
+
+                    StatusChanged?.Invoke("opening chat...");
+                    string continuation = await GetInitialContinuation(videoId, ct)
+                                          ?? throw new Exception("chat not available for this stream");
+
+                    while (!ct.IsCancellationRequested)
                     {
-                        StatusChanged?.Invoke("chat ended");
-                        return;
+                        StatusChanged?.Invoke("connected");
+                        var (nextToken, delay) = await PollOnce(continuation, ct);
+                        if (nextToken == null)
+                        {
+                            // The stream ended, but the loop keeps going: a new
+                            // live stream on the same channel is picked up
+                            // automatically instead of stranding the overlay
+                            // until it is removed and re-added.
+                            StatusChanged?.Invoke("chat ended - waiting for the next live stream...");
+                            await Task.Delay(TimeSpan.FromSeconds(15), ct);
+                            break;
+                        }
+                        continuation = nextToken;
+                        await Task.Delay(delay, ct);
                     }
-                    continuation = nextToken;
-                    await Task.Delay(delay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    StatusChanged?.Invoke($"reconnecting ({ex.Message})");
+                    try { await Task.Delay(TimeSpan.FromSeconds(8), ct); } catch (OperationCanceledException) { return; }
                 }
             }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                StatusChanged?.Invoke($"reconnecting ({ex.Message})");
-                try { await Task.Delay(TimeSpan.FromSeconds(8), ct); } catch (OperationCanceledException) { return; }
-            }
+        }
+        finally
+        {
+            // Disposed here (on the loop's own thread) - see TwitchChatClient.Run.
+            try { cts.Dispose(); } catch { }
         }
     }
 
@@ -207,8 +222,9 @@ public sealed partial class YouTubeChatClient : IChatClient
 
     public static async Task<string?> ResolveVideoId(string input, CancellationToken ct)
     {
-        // Direct video URL / id
-        if (input.Length == 11 && !input.Contains('/') && !input.Contains('.'))
+        // Direct video URL / id. An @handle can also be 11 chars with no dots or
+        // slashes, so exclude it here or it gets misrouted as a video ID.
+        if (input.Length == 11 && !input.Contains('/') && !input.Contains('.') && !input.StartsWith('@'))
             return input;
         var m = Regex.Match(input, @"[?&]v=([A-Za-z0-9_-]{11})");
         if (m.Success) return m.Groups[1].Value;
@@ -329,8 +345,9 @@ public sealed partial class YouTubeChatClient : IChatClient
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        // Cancel only; the Run loop disposes the CTS itself (see Run).
+        var cts = _cts;
         _cts = null;
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 }

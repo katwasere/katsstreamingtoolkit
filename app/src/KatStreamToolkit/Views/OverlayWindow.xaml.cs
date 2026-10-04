@@ -102,8 +102,14 @@ public partial class OverlayWindow : Window
 
     public void RestartSources() => StartSources();
 
+    // Bumped on every (re)start: status callbacks from the previous sources can
+    // still be queued right before RestartSources replaces them, and the old
+    // code let them repaint the header with stale text.
+    private int _sourceGeneration;
+
     private void StartSources()
     {
+        int generation = ++_sourceGeneration;
         ReleaseSources();
 
         var specs = BuildSpecs(_config);
@@ -119,7 +125,7 @@ public partial class OverlayWindow : Window
             _sourceKeys.Add(spec.Key);
             _subscriptions.Add(entry.Subscribe(
                 msg => Dispatcher.BeginInvoke(() => AppendMessage(msg)),
-                status => Dispatcher.BeginInvoke(() => UpdateStatus(spec.Platform, status))));
+                status => Dispatcher.BeginInvoke(() => UpdateStatus(generation, spec.Platform, status))));
             _statuses[spec.Platform] = "starting...";
         }
     }
@@ -162,8 +168,9 @@ public partial class OverlayWindow : Window
 
     private readonly Dictionary<string, string> _statuses = new();
 
-    private void UpdateStatus(string platform, string status)
+    private void UpdateStatus(int generation, string platform, string status)
     {
+        if (generation != _sourceGeneration) return;
         _statuses[platform] = status;
         var parts = _statuses.Select(kv => $"{kv.Key}: {kv.Value}");
         StatusText.Text = string.Join("  |  ", parts);

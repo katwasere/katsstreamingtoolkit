@@ -15,7 +15,7 @@ public static class DeployService
     public static SshClient ConnectSsh(DeployTarget t)
     {
         AuthenticationMethod auth = t.UseKey
-            ? new PrivateKeyAuthenticationMethod(t.User, new PrivateKeyFile(t.KeyPath))
+            ? new PrivateKeyAuthenticationMethod(t.User, LoadPrivateKey(t))
             : new PasswordAuthenticationMethod(t.User, t.Password);
         var info = new ConnectionInfo(t.Host, t.User, auth) { Timeout = TimeSpan.FromSeconds(15) };
         var client = new SshClient(info);
@@ -28,7 +28,7 @@ public static class DeployService
     private static SftpClient ConnectSftp(DeployTarget t)
     {
         AuthenticationMethod auth = t.UseKey
-            ? new PrivateKeyAuthenticationMethod(t.User, new PrivateKeyFile(t.KeyPath))
+            ? new PrivateKeyAuthenticationMethod(t.User, LoadPrivateKey(t))
             : new PasswordAuthenticationMethod(t.User, t.Password);
         var info = new ConnectionInfo(t.Host, t.User, auth) { Timeout = TimeSpan.FromSeconds(15) };
         var sftp = new SftpClient(info);
@@ -36,6 +36,32 @@ public static class DeployService
         if (!sftp.IsConnected)
             throw new Exception("could not open SFTP session");
         return sftp;
+    }
+
+    // Passphrase-protected keys: SSH.NET accepts the deploy password as the key
+    // passphrase. The old `new PrivateKeyFile(t.KeyPath)` threw an opaque
+    // "private key is encrypted" error for encrypted keys and never tried.
+    private static PrivateKeyFile LoadPrivateKey(DeployTarget t)
+    {
+        try
+        {
+            return string.IsNullOrEmpty(t.Password)
+                ? new PrivateKeyFile(t.KeyPath)
+                : new PrivateKeyFile(t.KeyPath, t.Password);
+        }
+        catch (Exception ex) when (!string.IsNullOrEmpty(t.Password))
+        {
+            try
+            {
+                return new PrivateKeyFile(t.KeyPath);
+            }
+            catch
+            {
+                throw new Exception(
+                    $"could not read the SSH key '{t.KeyPath}': {ex.Message}" +
+                    " (passphrase-protected keys use the Deploy password as the passphrase)", ex);
+            }
+        }
     }
 
     private static (int ExitCode, string Output) Run(SshClient client, string command, int timeoutSeconds = 300)
@@ -61,50 +87,88 @@ public static class DeployService
 
     public static void Deploy(AppConfig cfg, DeployTarget t, Action<string> log)
     {
+        // The staged bundle contains nginx.conf with every real stream key -
+        // clean it up whatever happens instead of leaving it in %TEMP% forever.
         string temp = Path.Combine(Path.GetTempPath(), "kat-relay-deploy");
-        if (Directory.Exists(temp))
-            Directory.Delete(temp, true);
-        ServerExporter.Export(temp, cfg);
-        log("bundle exported");
-
-        using var client = ConnectSsh(t);
-        log($"connected to {t.Host}");
-        ValidateIngestHosts(cfg, client, log);
-
-        using (var sftp = ConnectSftp(t))
+        try
         {
-            EnsureRemoteDir(sftp, client, t.RemotePath, log);
-            foreach (var file in Directory.GetFiles(temp, "*", SearchOption.AllDirectories))
+            if (Directory.Exists(temp))
+                Directory.Delete(temp, true);
+            ServerExporter.Export(temp, cfg, log);
+            log("bundle exported");
+
+            using var client = ConnectSsh(t);
+            log($"connected to {t.Host}");
+            ValidateIngestHosts(cfg, client, log);
+
+            // Plain `sudo` blocks forever waiting for a password. Detect it once:
+            // `sudo -n` fails immediately instead of hanging the deploy.
+            var (sudoCode, _) = Run(client, "sudo -n true 2>/dev/null", 15);
+            bool passwordlessSudo = sudoCode == 0;
+            string sudo = passwordlessSudo ? "sudo -n" : "";
+            if (passwordlessSudo)
+                log("sudo: passwordless");
+            else
+                log("sudo needs a password - falling back to direct docker access (the SSH user needs the docker group)");
+
+            using (var sftp = ConnectSftp(t))
             {
-                string relative = Path.GetRelativePath(temp, file);
-                string remoteDir = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? "";
-                if (remoteDir.Length > 0 && !sftp.Exists($"{t.RemotePath}/{remoteDir}"))
-                    sftp.CreateDirectory($"{t.RemotePath}/{remoteDir}");
-                using var fs = File.OpenRead(file);
-                sftp.UploadFile(fs, $"{t.RemotePath}/{relative.Replace('\\', '/')}", true);
-                log("  uploaded " + relative);
+                EnsureRemoteDir(sftp, client, t.RemotePath, log);
+                foreach (var file in Directory.GetFiles(temp, "*", SearchOption.AllDirectories))
+                {
+                    string relative = Path.GetRelativePath(temp, file);
+                    string remoteDir = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? "";
+                    if (remoteDir.Length > 0)
+                        EnsureRemoteDirPath(sftp, t.RemotePath, remoteDir);
+                    using var fs = File.OpenRead(file);
+                    sftp.UploadFile(fs, $"{t.RemotePath}/{relative.Replace('\\', '/')}", true);
+                    log("  uploaded " + relative);
+                }
+            }
+            log("upload complete");
+
+            // Cloud VPS MTU mismatch (Oracle's 9000-byte VNICs vs the 1500-byte
+            // internet) blackholes large RTMP packets: OBS connects and dies a few
+            // seconds in and pushes to platforms stall. Idempotent, best-effort.
+            log("applying network hardening (MTU/MSS clamp)...");
+            if (passwordlessSudo)
+            {
+                var (hardenCode, hardenOut) = Run(client, $"cd '{t.RemotePath}' && sudo -n sh server-hardening.sh 2>&1");
+                foreach (var line in hardenOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    log("  " + line);
+                if (hardenCode != 0)
+                    log("  note: hardening failed - if OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
+            }
+            else
+            {
+                log("  skipped (no passwordless sudo) - if OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
+            }
+
+            var (code, output) = Run(client, $"cd '{t.RemotePath}' && {sudo} docker compose up -d --build 2>&1", 600);
+            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                log("  " + line);
+            if (code != 0)
+            {
+                string hint = passwordlessSudo
+                    ? ""
+                    : " - if this was a permission error, add your SSH user to the docker group (sudo usermod -aG docker "
+                      + t.User + ") or configure passwordless sudo";
+                throw new Exception($"deploy failed (exit code {code}) - see log above{hint}");
+            }
+            log("deploy complete - relay is running");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(temp))
+                    Directory.Delete(temp, true);
+            }
+            catch
+            {
+                // Best effort.
             }
         }
-        log("upload complete");
-
-        // Cloud VPS MTU mismatch (Oracle's 9000-byte VNICs vs the 1500-byte
-        // internet) blackholes large RTMP packets: OBS connects and dies a few
-        // seconds in and pushes to platforms stall. Idempotent, best-effort.
-        log("applying network hardening (MTU/MSS clamp)...");
-        var (hardenCode, hardenOut) = Run(client,
-            $"cd '{t.RemotePath}' && (sudo -n sh server-hardening.sh 2>&1 || sudo sh server-hardening.sh 2>&1 || echo HARDENING_SKIPPED)");
-        foreach (var line in hardenOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            log("  " + line);
-        if (hardenCode != 0 || hardenOut.Contains("HARDENING_SKIPPED"))
-            log("  note: could not apply MTU hardening (sudo needs a password?). " +
-                "If OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
-
-        var (code, output) = Run(client, $"cd '{t.RemotePath}' && sudo docker compose up -d --build 2>&1", 600);
-        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            log("  " + line);
-        if (code != 0)
-            throw new Exception($"deploy failed (exit code {code}) - see log above");
-        log("deploy complete - relay is running");
     }
 
     // nginx resolves every push host while PARSING the config - one dead
@@ -164,9 +228,22 @@ public static class DeployService
         catch
         {
             log("folder needs admin rights - creating it with sudo...");
-            var (code, output) = Run(ssh, $"sudo mkdir -p '{remotePath}' && sudo chown \"$(id -un)\" '{remotePath}'");
+            var (code, output) = Run(ssh, $"sudo -n mkdir -p '{remotePath}' && sudo -n chown \"$(id -un)\" '{remotePath}'");
             if (code != 0)
                 throw new Exception($"could not create {remotePath}: {output}");
+        }
+    }
+
+    // Creates every level of a nested remote folder - the old code made exactly
+    // one level, so a two-level relative path (assets/img) failed.
+    private static void EnsureRemoteDirPath(SftpClient sftp, string remoteRoot, string relativeDir)
+    {
+        string current = remoteRoot.TrimEnd('/');
+        foreach (var part in relativeDir.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            current += "/" + part;
+            if (!sftp.Exists(current))
+                sftp.CreateDirectory(current);
         }
     }
 
@@ -182,8 +259,10 @@ public static class DeployService
 
     public static (bool Reachable, bool Receiving) FetchSnapshot(DeployTarget t)
     {
-        using var client = ConnectSsh(t);
-        var (_, output) = Run(client,
+        // Runs through the shared persistent SSH session (same one the preview
+        // service keeps alive) instead of opening a brand-new connection every
+        // 10 seconds forever.
+        string output = RelayPreviewService.RunOnServer(t,
             "curl -s --max-time 3 http://127.0.0.1:8080/stat || wget -qO- -T 3 http://127.0.0.1:8080/stat || true", 20);
         if (string.IsNullOrWhiteSpace(output) || !output.Contains("<rtmp"))
             return (false, false);

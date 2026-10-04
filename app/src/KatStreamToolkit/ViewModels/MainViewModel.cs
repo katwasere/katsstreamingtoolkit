@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Text;
@@ -74,7 +75,7 @@ public class MainViewModel : ObservableBase
         {
             if (_secrets.SshPassword == value) return;
             _secrets.SshPassword = value;
-            Save();
+            ScheduleSave();
         }
     }
 
@@ -182,8 +183,15 @@ public class MainViewModel : ObservableBase
     public ICommand RefreshStatusCommand { get; }
 
     private readonly DispatcherTimer _autoSave;
+    private readonly DispatcherTimer _saveDebounce;
     private readonly DispatcherTimer _autoStatusTimer;
     private readonly DispatcherTimer _monitorTimer;
+
+    private void ScheduleSave()
+    {
+        _saveDebounce.Stop();
+        _saveDebounce.Start();
+    }
 
     public MainViewModel()
     {
@@ -191,9 +199,11 @@ public class MainViewModel : ObservableBase
         _secrets = LoadSecrets();
         SecretsStore.Apply(Config, _secrets);
 
-        foreach (var d in Config.Destinations) AttachDestination(d);
+        // Attach/detach destination handlers ONLY here (CollectionChanged owns the
+        // lifetime) - the old ctor pre-attach loop double-subscribed everything.
         Destinations.CollectionChanged += (_, e) =>
         {
+            if (e.OldItems != null) foreach (DestinationConfig d in e.OldItems) DetachDestination(d);
             if (e.NewItems != null) foreach (DestinationConfig d in e.NewItems) AttachDestination(d);
             Config.Destinations = Destinations.ToList();
             Refresh();
@@ -204,7 +214,7 @@ public class MainViewModel : ObservableBase
             Save();
         };
         Config.Upstream.PropertyChanged += (_, _) => Refresh();
-        Config.MyChannels.PropertyChanged += (_, _) => Save();
+        Config.MyChannels.PropertyChanged += (_, _) => ScheduleSave();
 
         AddDestinationCommand = new RelayCommand(_ => AddDestination());
         RemoveDestinationCommand = new RelayCommand(_ =>
@@ -240,6 +250,16 @@ public class MainViewModel : ObservableBase
         _autoSave.Tick += (_, _) => Save();
         _autoSave.Start();
 
+        // Debounced save: Refresh() is wired to every property change (sliders,
+        // text boxes), so saving inline rewrote config.json dozens of times per
+        // second while editing. The 15s auto-save above is the safety net.
+        _saveDebounce = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _saveDebounce.Tick += (_, _) =>
+        {
+            _saveDebounce.Stop();
+            Save();
+        };
+
         _autoStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         _autoStatusTimer.Tick += (_, _) => { if (AutoStatus && !IsRunning) RefreshStatus(); };
         _autoStatusTimer.Start();
@@ -255,24 +275,48 @@ public class MainViewModel : ObservableBase
     private void AttachDestination(DestinationConfig d)
     {
         d.PropertyChanged += DestinationPropertyChanged;
-        HookLayers(d.Layers);
+        HookLayers(d);
+    }
+
+    private void DetachDestination(DestinationConfig d)
+    {
+        d.PropertyChanged -= DestinationPropertyChanged;
+        UnhookLayers(d);
     }
 
     private void DestinationPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(DestinationConfig.Layers) && sender is DestinationConfig d)
-            HookLayers(d.Layers);
+        {
+            UnhookLayers(d);
+            HookLayers(d);
+        }
         Refresh();
     }
 
-    private void HookLayers(ObservableCollection<OutputLayer> layers)
+    // Tracked subscriptions: the old code never detached handlers from replaced
+    // or cleared layer collections, so handlers stacked up across long sessions.
+    private readonly Dictionary<DestinationConfig, (ObservableCollection<OutputLayer> Layers, NotifyCollectionChangedEventHandler Handler)> _hookedLayers = new();
+
+    private void HookLayers(DestinationConfig d)
     {
-        layers.CollectionChanged += (_, e) =>
+        if (_hookedLayers.ContainsKey(d)) return;
+        NotifyCollectionChangedEventHandler handler = (_, e) =>
         {
+            if (e.OldItems != null) foreach (OutputLayer l in e.OldItems) l.PropertyChanged -= LayerPropertyChanged;
             if (e.NewItems != null) foreach (OutputLayer l in e.NewItems) l.PropertyChanged += LayerPropertyChanged;
             Refresh();
         };
-        foreach (var l in layers) l.PropertyChanged += LayerPropertyChanged;
+        _hookedLayers[d] = (d.Layers, handler);
+        d.Layers.CollectionChanged += handler;
+        foreach (var l in d.Layers) l.PropertyChanged += LayerPropertyChanged;
+    }
+
+    private void UnhookLayers(DestinationConfig d)
+    {
+        if (!_hookedLayers.Remove(d, out var hooked)) return;
+        hooked.Layers.CollectionChanged -= hooked.Handler;
+        foreach (var l in hooked.Layers) l.PropertyChanged -= LayerPropertyChanged;
     }
 
     private void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
@@ -310,12 +354,17 @@ public class MainViewModel : ObservableBase
         Refresh();
     }
 
+    // The arrows move exactly one slot: calling MoveDestinationTo(i + 1) here
+    // cancelled out against its drag-drop decrement (a silent no-op), which is
+    // why the "move right" button never did anything.
     private void MoveDestination(DestinationConfig? dest, int delta)
     {
         if (dest is null) return;
         int i = Destinations.IndexOf(dest);
-        if (i < 0) return;
-        MoveDestinationTo(dest, i + delta);
+        int j = i + delta;
+        if (i < 0 || j < 0 || j >= Destinations.Count) return;
+        Destinations.Move(i, j);
+        Refresh();
     }
 
     private void AddOverlay()
@@ -334,8 +383,9 @@ public class MainViewModel : ObservableBase
             overlay.Y = 60;
         }
         SelectedOverlay = overlay;
+        // Overlays.CollectionChanged already re-syncs Config.Overlays - the old
+        // explicit Add here inserted the entry twice.
         Overlays.Add(overlay);
-        Config.Overlays.Add(overlay);
         OverlayAdded?.Invoke(overlay);
         Save();
     }
@@ -561,6 +611,6 @@ public class MainViewModel : ObservableBase
             ? ""
             : RelayConfigGenerator.DescribeDestination(Config, SelectedDestination, ShowSecretsInPreview);
         Raise(nameof(SelectedCommandPreview));
-        Save();
+        ScheduleSave();
     }
 }

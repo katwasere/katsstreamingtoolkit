@@ -105,10 +105,16 @@
                                               ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                               IsHitTestVisible="False" />
                             <Popup x:Name="Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
-                                   AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                                    AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                                <!-- TemplateBinding does not resolve inside Popup content
+                                     (disconnected visual tree); a RelativeSource
+                                     TemplatedParent binding does, and keeps the dropdown
+                                     at least as wide as the closed box. -->
                                 <Border Background="{StaticResource PanelBackgroundBrush}"
                                         BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="1"
-                                        CornerRadius="3" MinWidth="{TemplateBinding ActualWidth}" Margin="0,2,0,0">
+                                        CornerRadius="3"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        Margin="0,2,0,0">
                                     <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto">
                                         <ItemsPresenter />
                                     </ScrollViewer>
@@ -205,10 +211,24 @@
             <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}" />
         </Style>
 
+        <!-- Without a template the stock tooltip chrome ignores the Background/
+             Foreground setters and renders the bright default tooltip. -->
         <Style TargetType="ToolTip">
             <Setter Property="Background" Value="#FF22262E" />
             <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}" />
+            <Setter Property="HasDropShadow" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                                CornerRadius="3" Padding="8,4">
+                            <ContentPresenter />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
     </Application.Resources>

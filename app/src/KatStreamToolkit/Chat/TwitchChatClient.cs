@@ -26,54 +26,70 @@ public sealed class TwitchChatClient : IChatClient
     public void Start()
     {
         _cts = new CancellationTokenSource();
-        var thread = new Thread(() => Run(_cts.Token)) { IsBackground = true, Name = "twitch-chat" };
+        var cts = _cts;
+        var thread = new Thread(() => Run(cts)) { IsBackground = true, Name = "twitch-chat" };
         thread.Start();
     }
 
-    private async void Run(CancellationToken ct)
+    private async void Run(CancellationTokenSource cts)
     {
+        CancellationToken ct = cts.Token;
+        string nick = $"justinfan{Random.Shared.Next(10000, 99999)}";
         var backoff = TimeSpan.FromSeconds(3);
-        while (!ct.IsCancellationRequested)
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                StatusChanged?.Invoke("connecting...");
-                using var tcp = new TcpClient();
-                ct.Register(() => tcp.Close());
-                await tcp.ConnectAsync(Host, Port, ct);
-                await using var ssl = new SslStream(tcp.GetStream());
-                await ssl.AuthenticateAsClientAsync(Host);
-                using var reader = new StreamReader(ssl, Encoding.UTF8);
-                await using var writer = new StreamWriter(ssl, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\r\n" };
-
-                await writer.WriteLineAsync("CAP REQ :twitch.tv/tags");
-                await writer.WriteLineAsync($"NICK justinfan{Random.Shared.Next(10000, 99999)}");
-                await writer.WriteLineAsync($"JOIN #{_channel}");
-
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct)) != null)
+                try
                 {
-                    if (line.StartsWith("PING"))
+                    StatusChanged?.Invoke("connecting...");
+                    using var tcp = new TcpClient();
+                    using var closeOnCancel = ct.Register(() => tcp.Close());
+                    await tcp.ConnectAsync(Host, Port, ct);
+                    await using var ssl = new SslStream(tcp.GetStream());
+                    await ssl.AuthenticateAsClientAsync(Host);
+                    using var reader = new StreamReader(ssl, Encoding.UTF8);
+                    await using var writer = new StreamWriter(ssl, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\r\n" };
+
+                    await writer.WriteLineAsync("CAP REQ :twitch.tv/tags");
+                    await writer.WriteLineAsync($"NICK {nick}");
+                    await writer.WriteLineAsync($"JOIN #{_channel}");
+
+                    string? line;
+                    while ((line = await reader.ReadLineAsync(ct)) != null)
                     {
-                        await writer.WriteLineAsync("PONG :tmi.twitch.tv");
-                        continue;
+                        if (line.StartsWith("PING"))
+                        {
+                            await writer.WriteLineAsync("PONG :tmi.twitch.tv");
+                            continue;
+                        }
+                        // Only OUR join (or the 001 welcome) means connected - any
+                        // " JOIN " line fires whenever someone else joins the room.
+                        if (line.Contains(" 001 ") || line.StartsWith(':' + nick + '!'))
+                            StatusChanged?.Invoke("connected");
+                        if (line.Contains("RECONNECT"))
+                            throw new IOException("server requested reconnect");
+                        ParseAndRaise(line);
                     }
-                    if (line.Contains(" JOIN "))
-                        StatusChanged?.Invoke("connected");
-                    if (line.Contains("RECONNECT"))
-                        throw new IOException("server requested reconnect");
-                    ParseAndRaise(line);
                 }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    StatusChanged?.Invoke($"reconnecting ({ex.Message})");
+                }
+                try { await Task.Delay(backoff, ct); } catch (OperationCanceledException) { return; }
             }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                StatusChanged?.Invoke($"reconnecting ({ex.Message})");
-            }
-            try { await Task.Delay(backoff, ct); } catch (OperationCanceledException) { return; }
+        }
+        finally
+        {
+            // Dispose lives here (on the loop's own thread), NOT in Dispose() -
+            // disposing the CTS from another thread while the loop waits in
+            // Task.Delay(backoff, ct) threw ObjectDisposedException out of this
+            // async void and crashed the process.
+            try { cts.Dispose(); } catch { }
         }
     }
 
@@ -139,17 +155,39 @@ public sealed class TwitchChatClient : IChatClient
         });
     }
 
-    private static string UnescapeTag(string s) => s
-        .Replace("\\s", " ")
-        .Replace("\\:", ";")
-        .Replace("\\\\", "\\")
-        .Replace("\\r", "")
-        .Replace("\\n", "");
+    // Sequential .Replace calls cannot unescape correctly (a literal "\s" in the
+    // source garbled into a space). Parse escapes in one pass instead.
+    private static string UnescapeTag(string s)
+    {
+        if (!s.Contains('\\')) return s;
+        var sb = new StringBuilder(s.Length);
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != '\\' || i + 1 >= s.Length)
+            {
+                sb.Append(s[i]);
+                continue;
+            }
+            switch (s[i + 1])
+            {
+                case '\\': sb.Append('\\'); i++; break;
+                case 's': sb.Append(' '); i++; break;
+                case ':': sb.Append(';'); i++; break;
+                case 'r': i++; break;
+                case 'n': i++; break;
+                default: sb.Append(s[i]); break;
+            }
+        }
+        return sb.ToString();
+    }
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        // Cancel only: the CTS is disposed by the Run loop when it unwinds (see
+        // the finally in Run), so a mid-reconnect Task.Delay can never observe a
+        // disposed token.
+        var cts = _cts;
         _cts = null;
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 }

@@ -190,7 +190,11 @@ public static class RelayConfigGenerator
         // The platform push and the preview snapshot both consume the composed
         // video, so split the label: [vmain] feeds the push, [vsnap] the JPEG.
         filterComplex += ";[v]split=2[vmain][vsnap]";
-        string pushMap = "-map \"[vmain]\" -map 0:a";
+        // `0:a?` = optional mapping: with no audio track in the OBS feed (muted
+        // or video-only capture) the old hard `-map 0:a` made ffmpeg exit
+        // instantly with "Stream map '0:a' matches no streams", killing every
+        // portrait/custom output while landscape pushes kept working.
+        string pushMap = "-map \"[vmain]\" -map 0:a?";
         string snap = $" -map \"[vsnap]\" -f image2 -r 2 -update 1 -q:v 5 {SnapshotPath(dest.Id)}";
 
         if (forTest)
@@ -203,6 +207,14 @@ public static class RelayConfigGenerator
 
         return $"\"/usr/bin/ffmpeg\" -hide_banner -nostdin -y -loglevel warning -i \"{pull}\"{inputs} -filter_complex \"{filterComplex}\" {pushMap} {video} {audio}{extra} -f flv \"{output}\"{snap}";
     }
+
+    // -loop 1 belongs to the image2 demuxer and is ignored by the GIF demuxer,
+    // so an animated GIF played exactly once and froze on its last frame.
+    // GIFs need -ignore_loop 0 to loop forever instead.
+    private static string ImageInputArg(string file)
+        => string.Equals(Path.GetExtension(file), ".gif", StringComparison.OrdinalIgnoreCase)
+            ? $" -ignore_loop 0 -i \"{file}\""
+            : $" -loop 1 -i \"{file}\"";
 
     // The single-crop custom layout (kept for configs created before layers).
     private static void BuildLegacyCustomGraph(DestinationConfig dest, int srcW, int srcH, string delay, out string inputs, out string filterComplex)
@@ -221,7 +233,7 @@ public static class RelayConfigGenerator
         string fgChain = $"scale={fgW}:{fgH}:flags=lanczos";
         string tail = $"[bg][fg]overlay={fxPx}:{fyPx},setsar=1{delay}[v]";
         string bgFile = BackgroundImageFile(dest);
-        inputs = string.IsNullOrEmpty(bgFile) ? "" : $" -loop 1 -i \"{bgFile}\"";
+        inputs = string.IsNullOrEmpty(bgFile) ? "" : ImageInputArg(bgFile);
         filterComplex = string.IsNullOrEmpty(bgFile)
             ? $"[0:v]{cropChain},split=2[bs][fs];[bs]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];[fs]{fgChain}[fg];{tail}"
             : $"[1:v]scale=1080:1920[bg];[0:v]{cropChain}[c];[c]{fgChain}[fg];{tail}";
@@ -244,8 +256,7 @@ public static class RelayConfigGenerator
         int nextInput = 1;
         if (!blurBase)
         {
-            bool gif = string.Equals(Path.GetExtension(bgFile), ".gif", StringComparison.OrdinalIgnoreCase);
-            inputs += gif ? $" -ignore_loop 0 -i \"{bgFile}\"" : $" -loop 1 -i \"{bgFile}\"";
+            inputs += ImageInputArg(bgFile);
             fc.Append($"[{nextInput}:v]scale={outW}:{outH}[base];");
             nextInput++;
         }
@@ -298,7 +309,7 @@ public static class RelayConfigGenerator
                 {
                     if (string.IsNullOrWhiteSpace(layer.Path)) break;
                     string file = OverlayImageFile(layer);
-                    inputs += $" -loop 1 -i \"{file}\"";
+                    inputs += ImageInputArg(file);
                     fc.Append($"[{nextInput}:v]scale={ow}:{oh}[katimg{n}];");
                     nextInput++;
                     fc.Append($"[{comp}][katimg{n}]overlay={ox}:{oy}[katc{n}];");
@@ -374,7 +385,11 @@ public static class RelayConfigGenerator
         if (cropH > 1)
         {
             cropH = 1;
-            cropW = 1 / aspectFactor;
+            // Re-clamp: for a portrait source (aspectFactor < 1) the raw
+            // 1/aspectFactor exceeds 1 and the Output Studio preview drew a
+            // crop wider than the source frame (the server-side px math
+            // clamps, so only the preview lied).
+            cropW = Math.Min(1 / aspectFactor, 1);
         }
         cropX = Math.Clamp(cropX, 0, Math.Max(0, 1 - cropW));
         cropY = Math.Clamp(cropY, 0, Math.Max(0, 1 - cropH));

@@ -21,9 +21,11 @@
     </Window.Resources>
 
     <Grid>
-        <Border x:Name="RootBorder" CornerRadius="6" BorderThickness="1"
-                BorderBrush="#33FFFFFF" Background="#FF111418"
-                Opacity="{Binding BackgroundOpacity, Mode=OneWay}">
+        <!-- The opacity belongs to the backdrop only: applied to the whole border
+             it faded the chat text along with the background. -->
+        <Border CornerRadius="6" BorderThickness="1" BorderBrush="#33FFFFFF" Background="#FF111418"
+                Opacity="{Binding BackgroundOpacity, Mode=OneWay}" />
+        <Border CornerRadius="6" Background="Transparent">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -55,7 +57,7 @@
 
                 <TextBlock Grid.Row="2" Text="locked - Ctrl+Alt+C to unlock overlays"
                            FontSize="9" Foreground="#66FFFFFF" Margin="10,0,10,3" TextAlignment="Right"
-                           Visibility="{Binding Locked, Converter={StaticResource InvBoolToVis}}" />
+                           Visibility="{Binding Locked, Converter={StaticResource BoolToVis}}" />
             </Grid>
         </Border>
     </Grid>

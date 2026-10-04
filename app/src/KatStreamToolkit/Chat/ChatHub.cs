@@ -77,9 +77,20 @@ public static class ChatHub
             }
             var client = spec.Factory();
             var entry = new ChatEntry { Client = client };
-            Entries[spec.Key] = entry;
             entry.RefCount = 1;
-            entry.Activate();
+            // Activate BEFORE registering: if Start()/connect throws, the old
+            // order left a dead entry in the dictionary and that platform could
+            // never connect again until an app restart.
+            try
+            {
+                entry.Activate();
+            }
+            catch
+            {
+                entry.Dispose();
+                throw;
+            }
+            Entries[spec.Key] = entry;
             return entry;
         }
     }
