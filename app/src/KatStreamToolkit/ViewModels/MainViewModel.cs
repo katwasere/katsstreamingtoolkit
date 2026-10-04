@@ -232,13 +232,13 @@ public class MainViewModel : ObservableBase
         SaveCommand = new RelayCommand(_ => Save());
         OpenKeysFileCommand = new RelayCommand(_ => OpenKeysFile());
         MoveKeysFileCommand = new RelayCommand(_ => MoveKeysFile());
-        TestConnectionCommand = new RelayCommand(_ => RunBackground(log => DeployService.TestConnection(BuildTarget(), log)),
+        TestConnectionCommand = new RelayCommand(_ => RunBackground(log => DeployService.TestConnection(BuildTarget(), log, Config)),
             _ => !IsRunning);
         DeployCommand = new RelayCommand(_ => RunBackground(log =>
         {
             DeployService.Deploy(Config, BuildTarget(), log);
             log("checking relay status...");
-            RelayStatusText = DeployService.FetchStatus(BuildTarget());
+            RelayStatusText = DeployService.FetchStatus(BuildTarget(), Config);
             Raise(nameof(RelayStatusText));
         }), _ => !IsRunning);
         RefreshStatusCommand = new RelayCommand(_ => RefreshStatus());
@@ -507,7 +507,7 @@ public class MainViewModel : ObservableBase
         {
             try
             {
-                return DeployService.FetchStatus(target);
+                return DeployService.FetchStatus(target, Config);
             }
             catch (Exception ex)
             {

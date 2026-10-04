@@ -6,6 +6,18 @@ namespace KatStreamToolkit.Services;
 
 public sealed record DeployTarget(string Host, string User, bool UseKey, string Password, string KeyPath, string RemotePath);
 
+// What the server actually runs vs what this app would deploy right now.
+public sealed record ServerBundleInfo(
+    bool ContainerRunning,
+    string? DeployedVersion,     // first line of BUNDLE-VERSION on the server (null = pre-versioning deploy)
+    string? RunningConfigHash,   // sha256 of the container's live /etc/nginx/nginx.conf
+    string ExpectedConfigHash)   // sha256 of the config this app generates now
+{
+    public bool RunningConfigMatches =>
+        RunningConfigHash != null &&
+        RunningConfigHash.StartsWith(ExpectedConfigHash, StringComparison.OrdinalIgnoreCase);
+}
+
 // SSH/SFTP operations for the Deploy tab. Everything runs on a background thread;
 // callers get progress through a log callback.
 public static class DeployService
@@ -73,7 +85,7 @@ public static class DeployService
         return (cmd.ExitStatus ?? -1, text);
     }
 
-    public static void TestConnection(DeployTarget t, Action<string> log)
+    public static void TestConnection(DeployTarget t, Action<string> log, AppConfig? cfg = null)
     {
         using var client = ConnectSsh(t);
         log($"connected to {t.Host}");
@@ -83,6 +95,47 @@ public static class DeployService
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             log("  " + line);
         log("docker is ready.");
+        if (cfg != null)
+        {
+            var info = GetServerBundleInfo(t, cfg);
+            log(info.DeployedVersion is null
+                ? "  server bundle: not stamped yet (deploy once to record the version)"
+                : $"  server bundle version: {info.DeployedVersion[..Math.Min(12, info.DeployedVersion.Length)]}");
+            if (info.RunningConfigHash is null)
+                log("  running relay config: could not read it (is the container running?)");
+            else if (info.RunningConfigMatches)
+                log("  running relay config matches this app - deploy is up to date");
+            else
+                log($"  running relay config is OLDER than this app (server {info.RunningConfigHash[..12]}, this app {info.ExpectedConfigHash[..12]}) - click Deploy to server");
+        }
+    }
+
+    // Best-effort read of what the server actually runs. Never throws: every
+    // field degrades to "unknown" on failure.
+    public static ServerBundleInfo GetServerBundleInfo(DeployTarget t, AppConfig cfg)
+    {
+        bool containerRunning = false;
+        string? version = null;
+        string? runningHash = null;
+        try
+        {
+            string containers = RelayPreviewService.RunOnServer(t,
+                "sh -c 'docker ps --format \"{{.Names}}\" 2>/dev/null || sudo -n docker ps --format \"{{.Names}}\" 2>/dev/null'");
+            containerRunning = containers.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Contains("kat-relay");
+
+            version = RelayPreviewService.RunOnServer(t, $"head -n 1 '{t.RemotePath}/BUNDLE-VERSION' 2>/dev/null").Trim();
+            if (version.Length == 0) version = null;
+
+            string hashOut = RelayPreviewService.RunOnServer(t,
+                "sh -c 'docker exec kat-relay sha256sum /etc/nginx/nginx.conf 2>/dev/null || sudo -n docker exec kat-relay sha256sum /etc/nginx/nginx.conf 2>/dev/null'");
+            runningHash = hashOut.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        }
+        catch
+        {
+            // Best effort - the caller shows "unknown".
+        }
+        return new ServerBundleInfo(containerRunning, version, runningHash, ServerExporter.ComputeNginxConfigHash(cfg));
     }
 
     public static void Deploy(AppConfig cfg, DeployTarget t, Action<string> log)
@@ -95,7 +148,7 @@ public static class DeployService
             if (Directory.Exists(temp))
                 Directory.Delete(temp, true);
             ServerExporter.Export(temp, cfg, log);
-            log("bundle exported");
+            log($"bundle exported (version {ServerExporter.ComputeBundleHash(cfg)[..12]})");
 
             using var client = ConnectSsh(t);
             log($"connected to {t.Host}");
@@ -249,12 +302,22 @@ public static class DeployService
 
     // Reads the relay's stats endpoint through the server's loopback interface,
     // so nothing (not even the stats) is exposed to the internet.
-    public static string FetchStatus(DeployTarget t)
+    public static string FetchStatus(DeployTarget t, AppConfig? cfg = null)
     {
         var (reachable, receiving) = FetchSnapshot(t);
         if (!reachable)
             return "relay not responding - deploy the bundle first";
-        return receiving ? "receiving your stream" : "relay running, waiting for OBS";
+        string status = receiving ? "receiving your stream" : "relay running, waiting for OBS";
+        if (cfg != null)
+        {
+            var info = GetServerBundleInfo(t, cfg);
+            status += info.RunningConfigHash is null
+                ? " | server bundle: unverified"
+                : info.RunningConfigMatches
+                    ? $" | server bundle up to date ({info.ExpectedConfigHash[..12]})"
+                    : $" | server bundle OUTDATED (server {info.RunningConfigHash[..12]} vs app {info.ExpectedConfigHash[..12]}) - redeploy";
+        }
+        return status;
     }
 
     public static (bool Reachable, bool Receiving) FetchSnapshot(DeployTarget t)

@@ -57,17 +57,17 @@ public static class RelayPreviewService
         }
     }
 
-    public static PreviewSnapshot FetchSnapshot(DeployTarget t, DestinationConfig dest)
-        => FetchSnapshot(t, dest, dest.Id);
+    public static PreviewSnapshot FetchSnapshot(DeployTarget t, DestinationConfig dest, AppConfig? cfg = null)
+        => FetchSnapshot(t, dest, dest.Id, cfg);
 
-    public static PreviewSnapshot FetchSnapshot(DeployTarget t, DestinationConfig dest, Guid destinationId)
+    public static PreviewSnapshot FetchSnapshot(DeployTarget t, DestinationConfig dest, Guid destinationId, AppConfig? cfg = null)
     {
         lock (Gate)
         {
             try
             {
                 var client = GetClient(t);
-                return FetchSnapshotInner(client, t, dest, destinationId);
+                return FetchSnapshotInner(client, t, dest, destinationId, cfg);
             }
             catch (Exception ex)
             {
@@ -78,7 +78,7 @@ public static class RelayPreviewService
         }
     }
 
-    private static PreviewSnapshot FetchSnapshotInner(SshClient client, DeployTarget t, DestinationConfig dest, Guid destinationId)
+    private static PreviewSnapshot FetchSnapshotInner(SshClient client, DeployTarget t, DestinationConfig dest, Guid destinationId, AppConfig? cfg)
     {
         // Exceptions propagate to the caller, which resets the shared session
         // and reports the SSH error.
@@ -121,14 +121,45 @@ public static class RelayPreviewService
                 return new PreviewSnapshot(null,
                     $"nginx sees no incoming stream - in OBS set Server: rtmp://{t.Host}/live (rtmp://{t.Host}:1935/live is the same thing - 1935 is the default RTMP port), Key: your stream name, then Start Streaming. If OBS cannot connect at all, the server firewall/security list may not allow TCP 1935");
 
-            // The stream IS live. First: does the deployed nginx.conf even
-            // contain the preview snapshot outputs? A relay deployed before
-            // this feature has none, and the preview would blame OBS forever.
-            string snapLines = Run(client,
-                "sh -c 'docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null'");
-            if (string.IsNullOrWhiteSpace(snapLines) || snapLines.Trim() == "0")
+            // The stream IS live.
+
+            // A disabled destination has no encoder at all - say so instead of
+            // hinting at OBS.
+            if (!dest.Enabled)
                 return new PreviewSnapshot(null,
-                    "your stream IS live - but the relay on the server was deployed before preview snapshots existed. Click 'Deploy to server' once, then restart the stream (or re-click the test card) and this preview will fill in");
+                    $"stream is live, but '{dest.Name}' is disabled - enable it and click 'Deploy to server' so its encoder starts");
+
+            // Does the container run the config THIS app generates right now?
+            // Compared against the running /etc/nginx/nginx.conf - no guessing
+            // whether a redeploy actually happened.
+            if (cfg != null)
+            {
+                string hashOut = Run(client,
+                    "sh -c 'docker exec kat-relay sha256sum /etc/nginx/nginx.conf 2>/dev/null || sudo -n docker exec kat-relay sha256sum /etc/nginx/nginx.conf 2>/dev/null'");
+                string? runningHash = hashOut.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (runningHash != null)
+                {
+                    string expected = ServerExporter.ComputeNginxConfigHash(cfg);
+                    if (!runningHash.StartsWith(expected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string deployedVersion = Run(client, $"head -n 1 '{t.RemotePath}/BUNDLE-VERSION' 2>/dev/null").Trim();
+                        return new PreviewSnapshot(null,
+                            "your stream IS live - but the relay container runs an older config than this app builds"
+                            + (deployedVersion.Length > 0 ? $" (deployed bundle {deployedVersion[..Math.Min(12, deployedVersion.Length)]})" : " (deployed before version stamps)")
+                            + $", this app expects config {expected[..12]}. Click 'Deploy to server', then restart the stream so the encoder picks it up");
+                    }
+                }
+            }
+            else
+            {
+                // No config to compare against - fall back to detecting a
+                // pre-snapshot deployment.
+                string snapLines = Run(client,
+                    "sh -c 'docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null'");
+                if (string.IsNullOrWhiteSpace(snapLines) || snapLines.Trim() == "0")
+                    return new PreviewSnapshot(null,
+                        "your stream IS live - but the relay on the server was deployed before preview snapshots existed. Click 'Deploy to server' once, then restart the stream (or re-click the test card) and this preview will fill in");
+            }
 
             // If this destination's ingest host does not even resolve on the
             // server, say so - a dead default hostname is easy to miss.
@@ -148,21 +179,26 @@ public static class RelayPreviewService
             }
 
             // ffmpeg's stderr lands in the nginx error log - surface the most
-            // recent failure instead of a generic hint.
+            // recent failure instead of a generic hint. (The child's lines do
+            // not always mention "ffmpeg", so match the failure texts.)
             string logTail = Run(client,
                 "sh -c 'docker exec kat-relay sh -c \"tail -n 80 /var/log/nginx/error.log\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"tail -n 80 /var/log/nginx/error.log\" 2>/dev/null'");
             string? lastError = logTail
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .LastOrDefault(l => l.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase)
-                                    && (l.Contains("matches no streams")
-                                        || l.Contains("Error", StringComparison.OrdinalIgnoreCase)
-                                        || l.Contains("Invalid", StringComparison.OrdinalIgnoreCase)
-                                        || l.Contains("failed", StringComparison.OrdinalIgnoreCase)));
+                .LastOrDefault(l =>
+                    l.Contains("matches no streams", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("error", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("invalid", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("no such file", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("connection timed out", StringComparison.OrdinalIgnoreCase));
             if (lastError != null)
             {
                 if (lastError.Length > 220) lastError = lastError[..220] + "...";
                 return new PreviewSnapshot(null,
-                    "stream is live, but this output's encoder is failing: " + lastError);
+                    "stream is live, but the relay log shows a recent failure: " + lastError);
             }
 
             return new PreviewSnapshot(null,

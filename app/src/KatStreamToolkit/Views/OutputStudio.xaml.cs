@@ -947,7 +947,7 @@ public partial class OutputStudio : UserControl
             ServerWaitingText.Text = ex.Message;
             return;
         }
-        Task.Run(() => RelayPreviewService.FetchSnapshot(target, dest))
+        Task.Run(() => RelayPreviewService.FetchSnapshot(target, dest, _vm.Config))
             .ContinueWith(t =>
             {
                 Interlocked.Exchange(ref _serverBusy, 0);

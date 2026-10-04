@@ -22,11 +22,47 @@ public static class ServerExporter
         // Host networking: Docker no longer manages resolv.conf, and a flaky single
         // resolver stalls the encoders before they read the stream. Redundant VCN +
         // public resolvers with retries keep platform ingest names resolving.
-        File.WriteAllText(Path.Combine(folder, "resolv.conf"),
-            "nameserver 169.254.169.254\nnameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3 rotate\n");
+        File.WriteAllText(Path.Combine(folder, "resolv.conf"), ResolvConf);
+        // Version stamp: the toolkit reads this back from the server so "is the
+        // deployed relay current?" is a check against the running container,
+        // not a guess.
+        File.WriteAllText(Path.Combine(folder, "BUNDLE-VERSION"),
+            ComputeBundleHash(cfg) + "\n" + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss") + " UTC\n");
         // Keys live inside nginx.conf; keep them out of any git repo.
         File.WriteAllText(Path.Combine(folder, ".gitignore"), "nginx.conf\n");
         ExportCustomBackgrounds(folder, cfg, log);
+    }
+
+    private const string ResolvConf =
+        "nameserver 169.254.169.254\nnameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3 rotate\n";
+
+    // Hash of everything Export() writes that changes relay behavior, in a
+    // fixed order. Stamped into BUNDLE-VERSION on every export.
+    public static string ComputeBundleHash(AppConfig cfg)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        void Feed(string name, string content)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes($"### {name} ###\n{content}");
+            sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
+        }
+        Feed("Dockerfile", Dockerfile);
+        Feed("docker-compose.yml", ComposeYml);
+        Feed("nginx.conf", RelayConfigGenerator.GenerateNginxConf(cfg));
+        Feed("server-hardening.sh", ServerHardening);
+        Feed("resolv.conf", ResolvConf);
+        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return Convert.ToHexString(sha.Hash!).ToLowerInvariant();
+    }
+
+    // Hash of just the live relay config, comparable against the RUNNING
+    // container's /etc/nginx/nginx.conf (they are the same bytes when the
+    // deploy is current - both come from GenerateNginxConf).
+    public static string ComputeNginxConfigHash(AppConfig cfg)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(RelayConfigGenerator.GenerateNginxConf(cfg))))
+            .ToLowerInvariant();
     }
 
     // A missing image no longer aborts the entire export/deploy: the file is

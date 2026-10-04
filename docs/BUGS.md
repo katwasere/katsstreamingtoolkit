@@ -378,6 +378,28 @@ Four stacked causes:
   `KickChatClient.Run`)
   **Fixed**: registrations are disposed via `using`.
 
+### BUG-29. No way to verify what is actually deployed - [FIXED]
+- Reported while debugging "the live preview still says no incoming stream":
+  the toolkit could only GUESS whether the server ran the same bundle the app
+  would ship - an old deployment silently kept the preview broken and the
+  messages blamed the wrong thing.
+- **Fix**:
+  - `ServerExporter.Export` stamps a `BUNDLE-VERSION` file (content hash of
+    Dockerfile + compose + nginx.conf + hardening + resolv.conf, plus a UTC
+    timestamp); `ComputeNginxConfigHash` hashes the generated relay config.
+  - `DeployService.GetServerBundleInfo` reads the server side back: the
+    stamped version and the sha256 of the RUNNING container's
+    `/etc/nginx/nginx.conf`, compared against what this app generates now.
+  - Shown everywhere it matters: "Test connection" prints bundle version and
+    match/mismatch; the Deploy tab status line appends
+    `server bundle up to date (hash)` / `OUTDATED (server ... vs app ...) - redeploy`;
+    the Output Studio live view switches from "nginx sees no incoming stream"
+    to the real cause (relay down / nothing publishing / destination disabled /
+    config older than this app / dead ingest host / the actual relay-log error
+    line).
+- **Note**: app builds older than this change can't show the new diagnostics -
+  rebuild and run the app from source, then redeploy once to stamp the server.
+
 ## Second-pass summary
 
 | # | Area | Severity | Status |
@@ -392,6 +414,7 @@ Four stacked causes:
 | BUG-26 | Passphrase-protected SSH keys unsupported | Medium | FIXED |
 | BUG-27 | Custom-layout crop preview > 1 on portrait sources | Low (edge) | FIXED |
 | BUG-28 | Misc small items | Low | FIXED |
+| BUG-29 | Deployed relay version unverifiable | Medium | FIXED |
 
 All findings from both passes are now fixed; the only [OPEN]-worthy leftover
 is the BUG-18 bandwidth-math claim, which turned out to be correct as written
