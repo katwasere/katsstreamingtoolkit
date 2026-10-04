@@ -187,6 +187,9 @@ public class MainViewModel : ObservableBase
     private readonly DispatcherTimer _autoStatusTimer;
     private readonly DispatcherTimer _monitorTimer;
 
+    // Debounced save: Refresh() is wired to every property change (sliders,
+    // text boxes), so saving inline rewrote config.json dozens of times per
+    // second while editing. The 15s auto-save timer is the safety net.
     private void ScheduleSave()
     {
         _saveDebounce.Stop();
@@ -215,6 +218,16 @@ public class MainViewModel : ObservableBase
         };
         Config.Upstream.PropertyChanged += (_, _) => Refresh();
         Config.MyChannels.PropertyChanged += (_, _) => ScheduleSave();
+
+        // Created BEFORE the collections below are populated: adding the loaded
+        // destinations fires CollectionChanged -> Refresh -> ScheduleSave, and a
+        // null timer here crashed the app at startup.
+        _saveDebounce = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _saveDebounce.Tick += (_, _) =>
+        {
+            _saveDebounce.Stop();
+            Save();
+        };
 
         AddDestinationCommand = new RelayCommand(_ => AddDestination());
         RemoveDestinationCommand = new RelayCommand(_ =>
@@ -249,16 +262,6 @@ public class MainViewModel : ObservableBase
         _autoSave = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
         _autoSave.Tick += (_, _) => Save();
         _autoSave.Start();
-
-        // Debounced save: Refresh() is wired to every property change (sliders,
-        // text boxes), so saving inline rewrote config.json dozens of times per
-        // second while editing. The 15s auto-save above is the safety net.
-        _saveDebounce = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _saveDebounce.Tick += (_, _) =>
-        {
-            _saveDebounce.Stop();
-            Save();
-        };
 
         _autoStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         _autoStatusTimer.Tick += (_, _) => { if (AutoStatus && !IsRunning) RefreshStatus(); };
