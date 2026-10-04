@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using KatStreamToolkit.Models;
 using Renci.SshNet;
 
@@ -330,11 +331,170 @@ public static class RelayPreviewService
     {
         lock (Gate)
         {
+            StopLivePreviewLocked();
             try { _client?.Disconnect(); _client?.Dispose(); } catch { }
             _client = null;
             _target = null;
         }
     }
+
+    // ---------- live editing preview (continuous MJPEG over the SSH channel) ----------
+
+    private static CancellationTokenSource? _liveCts;
+
+    public static bool IsLivePreviewRunning => _liveCts != null;
+
+    // Streams the destination's composed output as a continuous low-res MJPEG
+    // feed (the exact ffmpeg graph, downscaled, ~12 fps) over the SSH command
+    // channel. onFrame arrives on background threads; onStatus on this thread.
+    public static void StartLivePreview(DeployTarget t, DestinationConfig dest, AppConfig cfg,
+        Action<byte[]> onFrame, Action<string> onStatus)
+    {
+        lock (Gate)
+        {
+            StopLivePreviewLocked();
+            _liveCts = new CancellationTokenSource();
+            var ct = _liveCts.Token;
+            var thread = new Thread(() => LiveLoop(t, dest, cfg, onFrame, onStatus, ct))
+            {
+                IsBackground = true,
+                Name = "kat-live-preview",
+            };
+            thread.Start();
+        }
+    }
+
+    public static void StopLivePreview()
+    {
+        lock (Gate)
+        {
+            StopLivePreviewLocked();
+        }
+    }
+
+    private static void StopLivePreviewLocked()
+    {
+        var cts = _liveCts;
+        _liveCts = null;
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private static void LiveLoop(DeployTarget t, DestinationConfig dest, AppConfig cfg,
+        Action<byte[]> onFrame, Action<string> onStatus, CancellationToken ct)
+    {
+        string tag = Guid.NewGuid().ToString("N")[..12];
+        string pkill = PkillCommand($"vp{tag}");
+        while (!ct.IsCancellationRequested)
+        {
+            SshCommand? cmd = null;
+            CancellationTokenRegistration reg = default;
+            try
+            {
+                // Kill any stale preview encoder first, then find the currently
+                // published stream (nginx's $name only exists inside exec_push).
+                RunOnServer(t, pkill);
+                string stat = RunOnServer(t,
+                    "curl -s --max-time 4 http://127.0.0.1:8080/stat 2>/dev/null || wget -qO- -T 4 http://127.0.0.1:8080/stat 2>/dev/null");
+                string streamName = ExtractLiveStreamName(stat);
+                if (streamName.Length == 0)
+                {
+                    onStatus("nginx sees no incoming stream - start streaming in OBS and this live preview connects automatically");
+                    ct.WaitHandle.WaitOne(3000);
+                    continue;
+                }
+
+                string command = RelayConfigGenerator.BuildLivePreviewCommand(cfg, dest, tag, streamName);
+                string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("exec " + command));
+                string remote =
+                    $"sh -c 'docker exec kat-relay sh -c \"echo {b64} | base64 -d > /tmp/kat-liveprev.sh && exec sh /tmp/kat-liveprev.sh\" 2>/dev/null' || sudo -n docker exec kat-relay sh -c 'echo {b64} | base64 -d > /tmp/kat-liveprev.sh && exec sh /tmp/kat-liveprev.sh'";
+
+                SshClient client;
+                lock (Gate) client = GetClient(t);
+                cmd = client.CreateCommand(remote);
+                cmd.CommandTimeout = TimeSpan.FromSeconds(15);
+                reg = ct.Register(() => { try { cmd!.Dispose(); } catch { } });
+                onStatus("connecting the live preview...");
+
+                var asyncResult = cmd.BeginExecute();
+                using var stream = cmd.OutputStream;
+
+                var buffer = new byte[64 * 1024];
+                var frame = new MemoryStream();
+                bool inFrame = false;
+                int prev = -1;
+                while (!ct.IsCancellationRequested)
+                {
+                    int read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+                    for (int i = 0; i < read; i++)
+                    {
+                        int b = buffer[i];
+                        if (!inFrame)
+                        {
+                            if (prev == 0xFF && b == 0xD8)
+                            {
+                                inFrame = true;
+                                frame.SetLength(0);
+                                frame.Write(buffer, i - 1, 2);
+                            }
+                        }
+                        else
+                        {
+                            frame.WriteByte((byte)b);
+                            if (prev == 0xFF && b == 0xD9)
+                            {
+                                inFrame = false;
+                                var data = frame.ToArray();
+                                ThreadPool.QueueUserWorkItem(_ => onFrame(data));
+                            }
+                        }
+                        prev = b;
+                    }
+                }
+                onStatus("live preview stream ended - retrying");
+            }
+            catch (Exception ex)
+            {
+                if (ct.IsCancellationRequested) break;
+                onStatus("live preview: " + ex.Message + " - retrying");
+            }
+            finally
+            {
+                reg.Dispose();
+                try { cmd?.Dispose(); } catch { }
+            }
+            ct.WaitHandle.WaitOne(2000);
+        }
+
+        // Best-effort cleanup: kill the remote encoder and the staged script
+        // (it embeds the ingest key).
+        try
+        {
+            RunOnServer(t, pkill);
+            RunOnServer(t, "sh -c 'docker exec kat-relay rm -f /tmp/kat-liveprev.sh 2>/dev/null' || sudo -n docker exec kat-relay rm -f /tmp/kat-liveprev.sh 2>/dev/null");
+        }
+        catch
+        {
+            // Shutdown/teardown - nothing to report.
+        }
+    }
+
+    // The published stream with at least one connected client (a stale stream
+    // entry with nclients 0 is not watchable).
+    private static string ExtractLiveStreamName(string statXml)
+    {
+        foreach (Match m in Regex.Matches(statXml, "<name>([^<]{3,64})</name>((?!</stream>).)*?<nclients>([1-9]\\d*)</nclients>",
+                     RegexOptions.Singleline))
+        {
+            string name = m.Groups[1].Value.Trim();
+            if (Regex.IsMatch(name, "^[A-Za-z0-9_-]+$"))
+                return name;
+        }
+        return "";
+    }
+
+    private static string PkillCommand(string token)
+        => $"sh -c 'docker exec kat-relay pkill -f {token} 2>/dev/null' || sudo -n docker exec kat-relay pkill -f {token} 2>/dev/null";
 
     private static bool TargetChanged(DeployTarget t)
         => _target is null

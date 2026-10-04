@@ -143,12 +143,23 @@ public static class RelayConfigGenerator
     public static string BuildTestEncoderCommand(AppConfig cfg, DestinationConfig dest)
         => BuildFfmpegArgs(cfg, dest, includeKeys: true, forTest: true);
 
-    private static string BuildFfmpegArgs(AppConfig cfg, DestinationConfig dest, bool includeKeys, bool forTest = false)
+    // The destination's exact composed output, downscaled and streamed as a
+    // continuous MJPEG feed for the Output Studio's live editing preview (no
+    // snapshot polling, no data-saving compromises while editing). The tag is
+    // unique per preview session so pkill stops exactly this encoder; the
+    // streamName is the currently published stream (nginx's $name only exists
+    // for nginx-spawned exec processes - the preview runs outside nginx).
+    public static string BuildLivePreviewCommand(AppConfig cfg, DestinationConfig dest, string tag, string streamName)
+        => BuildFfmpegArgs(cfg, dest, includeKeys: true, livePreviewTag: $"vp{tag}", streamName: streamName);
+
+    private static string BuildFfmpegArgs(AppConfig cfg, DestinationConfig dest, bool includeKeys, bool forTest = false, string? livePreviewTag = null, string? streamName = null)
     {
         var up = cfg.Upstream;
         int srcW = Math.Max(2, up.Width);
         int srcH = Math.Max(2, up.Height);
-        string pull = $"rtmp://127.0.0.1:1935/live/$name";
+        string pull = streamName is null
+            ? "rtmp://127.0.0.1:1935/live/$name"
+            : $"rtmp://127.0.0.1:1935/live/{streamName}";
         string output = Url(dest, includeKeys);
         int gop = Math.Max(1, up.Fps * Math.Max(1, dest.KeyframeSeconds));
         string preset = string.IsNullOrWhiteSpace(dest.EncoderPreset) ? "veryfast" : dest.EncoderPreset.Trim();
@@ -199,6 +210,17 @@ public static class RelayConfigGenerator
             // Landscape Custom with no layers yet: a plain re-encoded copy.
             inputs = "";
             filterComplex = $"[0:v]scale={outW}:{outH},setsar=1{delay}[v]";
+        }
+
+        if (livePreviewTag != null)
+        {
+            // Live editing preview: same composed picture, shrunk, streamed as
+            // multipart JPEG on stdout (the SSH command channel carries it).
+            bool vpPortrait = dest.Orientation == Orientation.Portrait;
+            int pw = vpPortrait ? 432 : 768;
+            int ph = vpPortrait ? 768 : 432;
+            filterComplex += $";[v]scale={pw}:{ph}[{livePreviewTag}]";
+            return $"\"/usr/bin/ffmpeg\" -hide_banner -nostdin -loglevel warning -i \"{pull}\"{inputs} -filter_complex \"{filterComplex}\" -map \"[{livePreviewTag}]\" -f mpjpeg -q:v 5 -r 12 pipe:1";
         }
 
         // The platform push and the preview snapshot both consume the composed

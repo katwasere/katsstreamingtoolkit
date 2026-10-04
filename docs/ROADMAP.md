@@ -18,13 +18,16 @@ Ordered by value-per-effort. Everything stays free/self-hosted.
   reads over SSH), plus a live preview of the nginx.conf lines each destination generates.
 - **Per-destination delay** - hold the first frame N seconds per portrait destination
   (clip safety); configured in the Output Studio, shipped inside the generated ffmpeg command.
+- **Live editing preview** - the Output Studio's server preview now streams the destination's
+  exact composed output continuously (~10 fps, 432x768 / 768x432 MJPEG, ~1-2 Mbit/s over the
+  existing SSH channel) instead of polling 2 fps snapshots, so while you edit you see exactly
+  what the platform receives, live. The snapshot diagnostics remain as the fallback until the
+  first frame lands, and stale frames are labelled with their age.
 
 ## Next
 
 - **TikTok chat connector** - TikTok requires signed websockets for chat reads
   (Euler Stream or similar); video output to TikTok already works via the relay.
-- **Full-motion server preview** - higher-frame-rate pull of each output from the
-  relay (RTMP/HLS) if the ~2 fps snapshots are not enough.
 - **Per-destination live checks** - query Kick/YouTube/etc. for "actually live on the
   platform" (the relay can't see what happens after each push; needs platform APIs/scrapes).
 - **Streaming SSH output** - stream deploy logs live instead of per-step updates.

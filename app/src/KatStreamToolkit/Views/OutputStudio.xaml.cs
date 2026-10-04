@@ -75,6 +75,7 @@ public partial class OutputStudio : UserControl
         Unloaded += (_, _) =>
         {
             _liveTimer?.Stop();
+            StopServerPoll();
             _serverTimer?.Stop();
             RelayPreviewService.Shutdown();
         };
@@ -443,11 +444,13 @@ public partial class OutputStudio : UserControl
             ShowOnly(landscape: !hasFfmpeg, crop: false, blur: false, custom: false, server: hasFfmpeg);
             ServerPreviewBox.Width = dest.Orientation == Orientation.Portrait ? 158 : 280;
             ServerPreviewBox.Height = dest.Orientation == Orientation.Portrait ? 280 : 158;
-            ServerPreviewImage.Source = null;
+            bool restarting = !(_liveDest?.Id == dest.Id && RelayPreviewService.IsLivePreviewRunning);
+            if (restarting) ServerPreviewImage.Source = null; // don't flicker the live picture on every edit tick
             ServerWaitingText.Text = hasFfmpeg
-                ? "waiting for frames - deploy with snapshots enabled, then go live"
-                : "landscape plain-copy outputs have no snapshot - switch them to the Custom layout, or use Mirror";
-            if (hasFfmpeg) StartServerPoll(dest.Id);
+                ? "starting the live preview on the relay..."
+                : "landscape plain-copy outputs have no preview - switch them to the Custom layout, or use Mirror";
+            ServerWaitingText.Visibility = Visibility.Visible;
+            if (hasFfmpeg) StartServerPoll(dest);
             else StopServerPoll();
             return;
         }
@@ -919,20 +922,93 @@ public partial class OutputStudio : UserControl
         UpdatePreview();
     }
 
-    private void StartServerPoll(Guid destinationId)
+    private DestinationConfig? _liveDest;
+    private int _liveFrames;
+
+    // Server preview: streams the destination's composed output continuously
+    // (low-res MJPEG over SSH) instead of polling 2 fps snapshots - while you
+    // are editing you want to SEE the output, not conserve data. The snapshot
+    // ladder stays only as the diagnostic fallback until the first frame lands.
+    private void StartServerPoll(DestinationConfig dest)
+    {
+        if (_vm is null) return;
+        if (_liveDest?.Id == dest.Id && RelayPreviewService.IsLivePreviewRunning) return;
+        StopServerPoll();
+
+        DeployTarget target;
+        try
+        {
+            target = _vm.BuildTarget();
+        }
+        catch (Exception ex)
+        {
+            ServerWaitingText.Text = ex.Message;
+            ServerWaitingText.Visibility = Visibility.Visible;
+            return;
+        }
+
+        _liveDest = dest;
+        _liveFrames = 0;
+        ServerWaitingText.Text = "starting the live preview on the relay...";
+        ServerWaitingText.Visibility = Visibility.Visible;
+        RelayPreviewService.StartLivePreview(target, dest, _vm.Config,
+            OnLiveFrame,
+            status => Dispatcher.BeginInvoke(() =>
+            {
+                if (_liveFrames == 0)
+                {
+                    ServerWaitingText.Text = status;
+                    ServerWaitingText.Visibility = Visibility.Visible;
+                }
+            }));
+        EnsureServerTimer().Start();
+    }
+
+    private DispatcherTimer EnsureServerTimer()
     {
         if (_serverTimer is null)
         {
-            _serverTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
+            _serverTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2.5) };
             _serverTimer.Tick += (_, _) => PollServerSnapshot();
         }
-        _serverTimer.Start();
+        return _serverTimer;
     }
 
-    private void StopServerPoll() => _serverTimer?.Stop();
+    private void OnLiveFrame(byte[] jpeg)
+    {
+        _liveFrames++;
+        Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                var image = new BitmapImage();
+                using var stream = new MemoryStream(jpeg);
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+                ServerPreviewImage.Source = image;
+                ServerWaitingText.Text = "LIVE - low-res copy of exactly what the platform is receiving";
+                ServerWaitingText.Visibility = Visibility.Visible;
+            }
+            catch
+            {
+                // torn frame - the next one fixes it
+            }
+        });
+    }
+
+    private void StopServerPoll()
+    {
+        _serverTimer?.Stop();
+        _liveDest = null;
+        RelayPreviewService.StopLivePreview();
+    }
 
     private void PollServerSnapshot()
     {
+        if (_liveFrames > 0) return; // live stream is delivering - no fallback needed
         if (_vm is null || _watchedDestination is null) return;
         if (Interlocked.CompareExchange(ref _serverBusy, 1, 0) != 0) return;
         var dest = _watchedDestination;
