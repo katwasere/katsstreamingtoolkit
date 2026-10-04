@@ -108,6 +108,28 @@ public static class RelayPreviewService
 
         if (string.IsNullOrWhiteSpace(b64) || b64.Length < 100)
         {
+            // No frame. Before blaming OBS, find the real cause: is the relay
+            // even up, is ANY stream being published, does the deployed config
+            // write preview snapshots at all, and what did ffmpeg log?
+            string stat = Run(client,
+                "sh -c 'curl -s --max-time 3 http://127.0.0.1:8080/stat 2>/dev/null || wget -qO- -T 3 http://127.0.0.1:8080/stat 2>/dev/null'");
+            if (string.IsNullOrWhiteSpace(stat) || !stat.Contains("<rtmp"))
+                return new PreviewSnapshot(null,
+                    "relay not responding - deploy the bundle first (the Deploy tab light reports the same)");
+
+            if (!stat.Contains("<publishing"))
+                return new PreviewSnapshot(null,
+                    $"nginx sees no incoming stream - in OBS set Server: rtmp://{t.Host}/live (rtmp://{t.Host}:1935/live is the same thing - 1935 is the default RTMP port), Key: your stream name, then Start Streaming. If OBS cannot connect at all, the server firewall/security list may not allow TCP 1935");
+
+            // The stream IS live. First: does the deployed nginx.conf even
+            // contain the preview snapshot outputs? A relay deployed before
+            // this feature has none, and the preview would blame OBS forever.
+            string snapLines = Run(client,
+                "sh -c 'docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"grep -c kat-preview /etc/nginx/nginx.conf\" 2>/dev/null'");
+            if (string.IsNullOrWhiteSpace(snapLines) || snapLines.Trim() == "0")
+                return new PreviewSnapshot(null,
+                    "your stream IS live - but the relay on the server was deployed before preview snapshots existed. Click 'Deploy to server' once, then restart the stream (or re-click the test card) and this preview will fill in");
+
             // If this destination's ingest host does not even resolve on the
             // server, say so - a dead default hostname is easy to miss.
             string? ingestHost = null;
@@ -122,13 +144,30 @@ public static class RelayPreviewService
                     $"sh -c 'docker exec kat-relay sh -c \"getent ahostsv4 {ingestHost} 2>/dev/null | head -1\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"getent ahostsv4 {ingestHost} 2>/dev/null | head -1\" 2>/dev/null'");
                 if (string.IsNullOrWhiteSpace(probe))
                     return new PreviewSnapshot(null,
-                        $"no frames: this destination's ingest host '{ingestHost}' does not resolve on the server - fix the ingest URL (some defaults, like TikTok's push.tiktokcdn.com, no longer exist in DNS)");
+                        $"stream is live, but this destination's ingest host '{ingestHost}' does not resolve on the server - fix the ingest URL (some defaults, like TikTok's push.tiktokcdn.com, no longer exist in DNS)");
             }
-        }
 
-        if (string.IsNullOrWhiteSpace(b64) || b64.Length < 100)
+            // ffmpeg's stderr lands in the nginx error log - surface the most
+            // recent failure instead of a generic hint.
+            string logTail = Run(client,
+                "sh -c 'docker exec kat-relay sh -c \"tail -n 80 /var/log/nginx/error.log\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"tail -n 80 /var/log/nginx/error.log\" 2>/dev/null'");
+            string? lastError = logTail
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .LastOrDefault(l => l.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase)
+                                    && (l.Contains("matches no streams")
+                                        || l.Contains("Error", StringComparison.OrdinalIgnoreCase)
+                                        || l.Contains("Invalid", StringComparison.OrdinalIgnoreCase)
+                                        || l.Contains("failed", StringComparison.OrdinalIgnoreCase)));
+            if (lastError != null)
+            {
+                if (lastError.Length > 220) lastError = lastError[..220] + "...";
+                return new PreviewSnapshot(null,
+                    "stream is live, but this output's encoder is failing: " + lastError);
+            }
+
             return new PreviewSnapshot(null,
-                $"nginx sees no incoming stream - in OBS set Server: rtmp://{t.Host}/live, Key: your stream name, then Start Streaming (the Deploy tab light turns green when it connects)");
+                "stream is live - waiting for this output's first preview frame (takes a few seconds). If nothing shows up, toggle the destination off/on and redeploy so its encoder restarts while the stream is live");
+        }
 
         try
         {
