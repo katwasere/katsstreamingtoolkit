@@ -129,6 +129,12 @@ public static class RelayPreviewService
                 return new PreviewSnapshot(null,
                     $"stream is live, but '{dest.Name}' is disabled - enable it and click 'Deploy to server' so its encoder starts");
 
+            // No ingest URL: the deploy deliberately leaves this destination
+            // out of nginx.conf (an empty/broken URL would kill the relay).
+            if (string.IsNullOrWhiteSpace(dest.IngestUrl))
+                return new PreviewSnapshot(null,
+                    $"stream is live, but '{dest.Name}' has no ingest URL - paste the RTMP URL from the platform's live-key page in the toolkit, then redeploy");
+
             // Does the container run the config THIS app generates right now?
             // Compared against the running /etc/nginx/nginx.conf - no guessing
             // whether a redeploy actually happened.

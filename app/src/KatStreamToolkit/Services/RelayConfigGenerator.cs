@@ -47,14 +47,22 @@ public static class RelayConfigGenerator
         foreach (var dest in passthrough)
         {
             sb.AppendLine($"            # {dest.Name}");
-            sb.AppendLine($"            push \"{Url(dest, includeKeys)}\";");
+            // An empty ingest URL must not reach nginx (it would parse as a
+            // broken push target); leave a visible placeholder instead.
+            if (string.IsNullOrWhiteSpace(dest.IngestUrl))
+                sb.AppendLine("            # (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
+            else
+                sb.AppendLine($"            push \"{Url(dest, includeKeys)}\";");
             sb.AppendLine();
         }
 
         foreach (var dest in processed)
         {
             sb.AppendLine($"            # {dest.Name} ({dest.PortraitStyle})");
-            sb.AppendLine($"            exec_push {BuildFfmpegArgs(cfg, dest, includeKeys)};");
+            if (string.IsNullOrWhiteSpace(dest.IngestUrl))
+                sb.AppendLine("            # (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
+            else
+                sb.AppendLine($"            exec_push {BuildFfmpegArgs(cfg, dest, includeKeys)};");
             sb.AppendLine();
         }
 
@@ -83,6 +91,12 @@ public static class RelayConfigGenerator
     public static string DescribeDestination(AppConfig cfg, DestinationConfig dest, bool includeKeys = true)
     {
         var sb = new StringBuilder();
+        if (string.IsNullOrWhiteSpace(dest.IngestUrl))
+        {
+            sb.AppendLine($"# {dest.Name}");
+            sb.Append("# (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
+            return sb.ToString();
+        }
         if (dest.Orientation == Orientation.Portrait || dest.PortraitStyle == PortraitStyle.Custom)
         {
             sb.AppendLine($"# {dest.Name} ({dest.PortraitStyle})");

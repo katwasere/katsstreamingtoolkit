@@ -39,6 +39,7 @@ public static class ConfigStore
                     cfg.Overlays ??= new List<OverlayConfig>();
                     cfg.Upstream ??= new UpstreamConfig();
                     cfg.MyChannels ??= new MyChannelsConfig();
+                    ClearKnownDeadDefaultIngest(cfg);
                     return cfg;
                 }
             }
@@ -116,6 +117,22 @@ public static class ConfigStore
         }
     }
 
+    // The shipped TikTok default host (push.tiktokcdn.com) no longer exists in
+    // DNS - TikTok rotates ingest endpoints, and the real RTMP URL has to come
+    // from the creator's live-key page. nginx resolves push hosts while parsing
+    // the config, so this stale default blocked EVERY deploy. Clear it; the
+    // generated config then skips that destination (with a comment) until a
+    // real URL is pasted.
+    private static void ClearKnownDeadDefaultIngest(AppConfig cfg)
+    {
+        foreach (var dest in cfg.Destinations)
+        {
+            if (Uri.TryCreate(dest.IngestUrl.Trim(), UriKind.Absolute, out var uri) &&
+                uri.Host.Equals("push.tiktokcdn.com", StringComparison.OrdinalIgnoreCase))
+                dest.IngestUrl = "";
+        }
+    }
+
     private static AppConfig CreateDefaults()
     {
         return new AppConfig
@@ -153,7 +170,9 @@ public static class ConfigStore
                     Enabled = false,
                     Orientation = Orientation.Portrait,
                     PortraitStyle = PortraitStyle.BlurredBackground,
-                    IngestUrl = "rtmp://push.tiktokcdn.com/live",
+                    // TikTok rotates ingest hosts - paste the RTMP URL from your
+                    // TikTok live-key page here; there is no stable default.
+                    IngestUrl = "",
                     VideoBitrateKbps = 4500,
                 },
                 new()

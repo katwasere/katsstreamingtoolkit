@@ -400,6 +400,25 @@ Four stacked causes:
 - **Note**: app builds older than this change can't show the new diagnostics -
   rebuild and run the app from source, then redeploy once to stamp the server.
 
+### BUG-30. Stale shipped TikTok default blocks every deploy - [FIXED]
+- The default TikTok destination ships `rtmp://push.tiktokcdn.com/live`, which
+  no longer resolves in DNS (TikTok rotates ingest endpoints; the real URL has
+  to come from the creator's live-key page). With that destination enabled,
+  `ValidateIngestHosts` correctly refused to deploy - but it blocked ALL
+  destinations, and the user had no way to know the URL was the toolkit's own
+  stale default. Found live during a deploy on 140.238.99.143.
+- **Fix**:
+  - `ConfigStore.Load` clears the known-dead default host on load
+    (`ClearKnownDeadDefaultIngest`); `CreateDefaults` no longer ships it.
+  - `RelayConfigGenerator` renders destinations without an ingest URL as a
+    comment in nginx.conf (`# (skipped: no ingest URL set ...)`) instead of a
+    broken `push`/`exec_push` line - a missing URL can no longer produce a
+    config that kills the relay. `DescribeDestination` mirrors it.
+  - The live preview names the situation: "has no ingest URL - paste the RTMP
+    URL from the platform's live-key page, then redeploy".
+  - Other dead user-entered hosts still fail the deploy with the explicit
+    SR-3 message (that behavior is correct - nginx would restart-loop).
+
 ## Second-pass summary
 
 | # | Area | Severity | Status |
@@ -415,6 +434,7 @@ Four stacked causes:
 | BUG-27 | Custom-layout crop preview > 1 on portrait sources | Low (edge) | FIXED |
 | BUG-28 | Misc small items | Low | FIXED |
 | BUG-29 | Deployed relay version unverifiable | Medium | FIXED |
+| BUG-30 | Stale shipped TikTok default blocks deploys | High | FIXED |
 
 All findings from both passes are now fixed; the only [OPEN]-worthy leftover
 is the BUG-18 bandwidth-math claim, which turned out to be correct as written
