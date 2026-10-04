@@ -968,11 +968,14 @@ public partial class OutputStudio : UserControl
                     image.EndInit();
                     image.Freeze();
                     ServerPreviewImage.Source = image;
-                    // Always say which mode the frame came from, so a test card is
-                    // never mistaken for the live stream.
+                    // Always say which mode the frame came from, so a test card
+                    // is never mistaken for the live stream - and label a stale
+                    // frame instead of showing a frozen picture as "live".
                     ServerWaitingText.Text = snapshot.IsTestFrame
                         ? "TEST CARD (auto-cleans shortly) - go live or re-click the button to refresh"
-                        : "LIVE - this is what the platform is receiving";
+                        : snapshot.FrameAgeSeconds is >= 0 and <= 15
+                            ? "LIVE - this is what the platform is receiving"
+                            : $"STALE FRAME ({snapshot.FrameAgeSeconds}s old) - the encoder wrote this during an earlier stream; start streaming in OBS to refresh";
                     ServerWaitingText.Visibility = Visibility.Visible;
                 }
                 catch

@@ -8,6 +8,10 @@ public sealed record PreviewSnapshot(byte[]? Data, string Status)
 {
     public bool HasFrame => Data is { Length: > 100 };
     public bool IsTestFrame { get; init; }
+
+    // Seconds since the snapshot file was written (-1 = unknown). The file
+    // survives its encoder, so a stale frame must be labelled as such.
+    public int FrameAgeSeconds { get; init; }
 }
 
 // Fetches the relay's per-destination preview snapshots (small JPEGs the ffmpeg
@@ -213,10 +217,19 @@ public static class RelayPreviewService
 
         try
         {
+            // How old is this frame? The file outlives its encoder, so age is
+            // the only way to tell "live" from "frozen leftover".
+            int frameAge = -1;
+            string ageOut = Run(client,
+                $"sh -c 'echo $(( $(date +%s) - $(stat -c %Y {file} 2>/dev/null || date +%s) ))' 2>/dev/null");
+            if (int.TryParse(ageOut.Trim(), out int parsedAge) && parsedAge >= 0 && parsedAge < 100000)
+                frameAge = parsedAge;
+
             return new PreviewSnapshot(Convert.FromBase64String(b64.Trim()),
                 isTest ? "test card (auto-stops after a few seconds)" : "ok")
             {
                 IsTestFrame = isTest,
+                FrameAgeSeconds = frameAge,
             };
         }
         catch (FormatException)
