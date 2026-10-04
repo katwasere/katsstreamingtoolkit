@@ -21,6 +21,7 @@ public enum PortraitStyle
 {
     CenterCrop,
     BlurredBackground,
+    Custom,
 }
 
 public enum ChatMode
@@ -37,6 +38,60 @@ public enum VerifyLight
     Idle,
     Ok,
     Error,
+}
+
+public enum LayerType
+{
+    Source,
+    Image,
+    Blur,
+    BackgroundReveal,
+}
+
+// One piece of a destination's Custom composite. Everything is normalized (0-1):
+// source rects against the input frame, output rects against the 1080x1920 output.
+// List order = z-order (first = back).
+public class OutputLayer : ObservableBase
+{
+    private Guid _id = Guid.NewGuid();
+    private LayerType _type = LayerType.Source;
+    private string _name = "";
+    private double _srcX, _srcY, _srcW, _srcH;
+    private double _x, _y, _w = 1, _h = 1;
+    private string _path = "";
+
+    public Guid Id { get => _id; set => Set(ref _id, value); }
+    public LayerType Type { get => _type; set => Set(ref _type, value); }
+
+    public string Name
+    {
+        get => _name;
+        set => Set(ref _name, string.IsNullOrWhiteSpace(value) ? DefaultName(_type) : value.Trim());
+    }
+
+    // Source layers: which part of the input this cut takes.
+    public double SrcX { get => _srcX; set => Set(ref _srcX, Math.Clamp(value, 0, 1)); }
+    public double SrcY { get => _srcY; set => Set(ref _srcY, Math.Clamp(value, 0, 1)); }
+    public double SrcW { get => _srcW; set => Set(ref _srcW, Math.Clamp(value, 0.005, 1)); }
+    public double SrcH { get => _srcH; set => Set(ref _srcH, Math.Clamp(value, 0.005, 1)); }
+
+    // Where the layer sits in the output frame.
+    public double X { get => _x; set => Set(ref _x, Math.Clamp(value, 0, 1)); }
+    public double Y { get => _y; set => Set(ref _y, Math.Clamp(value, 0, 1)); }
+    public double W { get => _w; set => Set(ref _w, Math.Clamp(value, 0.005, 1)); }
+    public double H { get => _h; set => Set(ref _h, Math.Clamp(value, 0.005, 1)); }
+
+    // Image layers: local PNG (transparency supported); shipped with the bundle.
+    public string Path { get => _path; set => Set(ref _path, value); }
+
+    public static string DefaultName(LayerType type) => type switch
+    {
+        LayerType.Source => "Source cut",
+        LayerType.Image => "Image overlay",
+        LayerType.Blur => "Blur area",
+        LayerType.BackgroundReveal => "Show background",
+        _ => "Layer",
+    };
 }
 
 public class UpstreamConfig : ObservableBase
@@ -111,6 +166,17 @@ public class DestinationConfig : ObservableBase
     private int _videoBitrateKbps = 6000;
     private int _audioBitrateKbps = 160;
     private int _keyframeSeconds = 2;
+    private string _encoderPreset = "veryfast";
+    private int _fpsOverride;
+    private string _extraArgs = "";
+    private int _delaySeconds;
+    private double _cropX;
+    private double _cropY;
+    private double _cropW;
+    private double _fgX;
+    private double _fgY;
+    private double _fgScale;
+    private string _customBackgroundPath = "";
 
     public Guid Id { get => _id; set => Set(ref _id, value); }
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -124,6 +190,25 @@ public class DestinationConfig : ObservableBase
     public int VideoBitrateKbps { get => _videoBitrateKbps; set => Set(ref _videoBitrateKbps, value); }
     public int AudioBitrateKbps { get => _audioBitrateKbps; set => Set(ref _audioBitrateKbps, value); }
     public int KeyframeSeconds { get => _keyframeSeconds; set => Set(ref _keyframeSeconds, value); }
+    public string EncoderPreset { get => _encoderPreset; set => Set(ref _encoderPreset, value); }
+    public int FpsOverride { get => _fpsOverride; set => Set(ref _fpsOverride, Math.Clamp(value, 0, 240)); }
+    public string ExtraArgs { get => _extraArgs; set => Set(ref _extraArgs, value); }
+    public int DelaySeconds { get => _delaySeconds; set => Set(ref _delaySeconds, Math.Clamp(value, 0, 600)); }
+
+    // Custom portrait layout, all normalized (0-1) to survive upstream resolution changes.
+    // Zeros mean "not touched yet" and fall back to the center-crop equivalent.
+    public double CropX { get => _cropX; set => Set(ref _cropX, Math.Clamp(value, 0, 1)); }
+    public double CropY { get => _cropY; set => Set(ref _cropY, Math.Clamp(value, 0, 1)); }
+    public double CropW { get => _cropW; set => Set(ref _cropW, Math.Clamp(value, 0, 1)); }
+    public double FgX { get => _fgX; set => Set(ref _fgX, Math.Clamp(value, 0, 1)); }
+    public double FgY { get => _fgY; set => Set(ref _fgY, Math.Clamp(value, 0, 1)); }
+    public double FgScale { get => _fgScale; set => Set(ref _fgScale, Math.Clamp(value, 0, 1)); }
+    public string CustomBackgroundPath { get => _customBackgroundPath; set => Set(ref _customBackgroundPath, value); }
+
+    // Custom composite layers (z-ordered). Empty = the single-crop custom layout
+    // above still applies, so older configs behave exactly as before.
+    private System.Collections.ObjectModel.ObservableCollection<OutputLayer> _layers = new();
+    public System.Collections.ObjectModel.ObservableCollection<OutputLayer> Layers { get => _layers; set => Set(ref _layers, value); }
 
     private VerifyLight _pushLight = VerifyLight.Unknown;
 

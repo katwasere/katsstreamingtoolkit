@@ -10,7 +10,9 @@ public sealed record DeployTarget(string Host, string User, bool UseKey, string 
 // callers get progress through a log callback.
 public static class DeployService
 {
-    private static SshClient ConnectSsh(DeployTarget t)
+    // Internal connect reused by the preview service; DeployService stays the
+    // single place that knows how to open SSH.
+    public static SshClient ConnectSsh(DeployTarget t)
     {
         AuthenticationMethod auth = t.UseKey
             ? new PrivateKeyAuthenticationMethod(t.User, new PrivateKeyFile(t.KeyPath))
@@ -67,18 +69,35 @@ public static class DeployService
 
         using var client = ConnectSsh(t);
         log($"connected to {t.Host}");
+        ValidateIngestHosts(cfg, client, log);
 
         using (var sftp = ConnectSftp(t))
         {
             EnsureRemoteDir(sftp, client, t.RemotePath, log);
-            foreach (var file in Directory.GetFiles(temp))
+            foreach (var file in Directory.GetFiles(temp, "*", SearchOption.AllDirectories))
             {
+                string relative = Path.GetRelativePath(temp, file);
+                string remoteDir = Path.GetDirectoryName(relative)?.Replace('\\', '/') ?? "";
+                if (remoteDir.Length > 0 && !sftp.Exists($"{t.RemotePath}/{remoteDir}"))
+                    sftp.CreateDirectory($"{t.RemotePath}/{remoteDir}");
                 using var fs = File.OpenRead(file);
-                sftp.UploadFile(fs, $"{t.RemotePath}/{Path.GetFileName(file)}", true);
-                log("  uploaded " + Path.GetFileName(file));
+                sftp.UploadFile(fs, $"{t.RemotePath}/{relative.Replace('\\', '/')}", true);
+                log("  uploaded " + relative);
             }
         }
         log("upload complete");
+
+        // Cloud VPS MTU mismatch (Oracle's 9000-byte VNICs vs the 1500-byte
+        // internet) blackholes large RTMP packets: OBS connects and dies a few
+        // seconds in and pushes to platforms stall. Idempotent, best-effort.
+        log("applying network hardening (MTU/MSS clamp)...");
+        var (hardenCode, hardenOut) = Run(client,
+            $"cd '{t.RemotePath}' && (sudo -n sh server-hardening.sh 2>&1 || sudo sh server-hardening.sh 2>&1 || echo HARDENING_SKIPPED)");
+        foreach (var line in hardenOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            log("  " + line);
+        if (hardenCode != 0 || hardenOut.Contains("HARDENING_SKIPPED"))
+            log("  note: could not apply MTU hardening (sudo needs a password?). " +
+                "If OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
 
         var (code, output) = Run(client, $"cd '{t.RemotePath}' && sudo docker compose up -d --build 2>&1", 600);
         foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -86,6 +105,50 @@ public static class DeployService
         if (code != 0)
             throw new Exception($"deploy failed (exit code {code}) - see log above");
         log("deploy complete - relay is running");
+    }
+
+    // nginx resolves every push host while PARSING the config - one dead
+    // hostname and the whole relay container fails to boot (restart loop),
+    // which just looks like "nothing works". Catch it before the deploy.
+    private static void ValidateIngestHosts(AppConfig cfg, SshClient client, Action<string> log)
+    {
+        var hosts = cfg.Destinations
+            .Where(d => d.Enabled)
+            .Select(d => IngestHost(d.IngestUrl))
+            .Where(h => !string.IsNullOrWhiteSpace(h))
+            .Select(h => h!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var dead = new List<string>();
+        foreach (var host in hosts)
+        {
+            var (code, _) = Run(client, $"getent ahostsv4 {host} >/dev/null 2>&1");
+            if (code != 0)
+                dead.Add(host);
+        }
+
+        if (dead.Count == 0)
+        {
+            if (hosts.Count > 0)
+                log($"ingest hosts OK ({hosts.Count} checked)");
+            return;
+        }
+
+        throw new Exception(
+            "these enabled destinations use ingest hosts that do not resolve on the server: "
+            + string.Join(", ", dead)
+            + " - fix the URL (some platform defaults are outdated) or disable the destination, otherwise nginx cannot start");
+    }
+
+    private static string? IngestHost(string ingestUrl)
+    {
+        var url = ingestUrl.Trim();
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
+            return uri.Host;
+        if (url.StartsWith("rtmp://", StringComparison.OrdinalIgnoreCase))
+            return url["rtmp://".Length..].Split('/')[0];
+        return null;
     }
 
     // SFTP cannot use sudo; on sudo-only servers (e.g. Oracle Linux's opc user) we

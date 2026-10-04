@@ -162,6 +162,10 @@
                 </ScrollViewer>
             </TabItem>
 
+            <TabItem Header="Output Studio">
+                <local:OutputStudio />
+            </TabItem>
+
             <TabItem Header="Chat Overlays">
                 <Grid Margin="8">
                     <Grid.ColumnDefinitions>
@@ -340,6 +344,10 @@
                         <TextBlock Text="Quick start" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
                                    Text="1) Fill in your destination ingest URLs and stream keys (copied from each platform's dashboard).&#x0a;2) Click 'Export server bundle...' - get a folder.&#x0a;3) Follow SETUP.md inside that folder to rent a VPS and start the relay (about 10 minutes, no experience needed).&#x0a;4) In OBS: Settings -> Stream -> Custom, server rtmp://YOUR.SERVER.IP/live, key = your stream name.&#x0a;5) Go live everywhere at once. Watch the toolkit's overlay tab for chat." />
+
+                        <TextBlock Text="Output Studio" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                                   Text="The Output Studio tab is a visual editor for everything the server sends out. Each enabled destination is a card in the pipeline: drag cards (or use the arrows) to set the order the server starts outputs in, click one to tune encoding (encoder preset, fps override, audio bitrate, keyframes, extra ffmpeg args, per-destination delay). Destinations can switch to a Custom layer layout: cut any rectangles out of your input (camera, game, anything) and move/resize them freely, overlay transparent PNGs, mark blur areas or spots where the background shows through, and set an image or animated GIF background - layers stack bottom to top and everything drag-positions in the preview. Preview sources: Mirror captures your OBS window locally for instant feedback; Server output (~2 fps) pulls the true rendered output back from the relay over SSH (snapshots are always written by ffmpeg-routed outputs - redeploy once so the server has them). The box at the bottom shows the exact lines the destination adds to nginx.conf (keys hidden until you tick 'show keys')." />
 
                         <TextBlock Text="Chat overlays" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"

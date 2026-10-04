@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Windows;
@@ -27,11 +28,30 @@ public class MainViewModel : ObservableBase
     public static Orientation[] AllOrientations { get; } = Enum.GetValues<Orientation>();
     public static PortraitStyle[] AllPortraitStyles { get; } = Enum.GetValues<PortraitStyle>();
     public static ChatMode[] AllChatModes { get; } = Enum.GetValues<ChatMode>();
+    public static string[] AllEncoderPresets { get; } = { "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow" };
 
     public OverlayConfig? SelectedOverlay { get => _selectedOverlay; set => Set(ref _selectedOverlay, value); }
-    public DestinationConfig? SelectedDestination { get => _selectedDestination; set => Set(ref _selectedDestination, value); }
+    public DestinationConfig? SelectedDestination
+    {
+        get => _selectedDestination;
+        set
+        {
+            if (Set(ref _selectedDestination, value))
+            {
+                // Recompute immediately: the change notification alone would make
+                // the binding re-read the previous card's preview text.
+                SelectedCommandPreview = value is null
+                    ? ""
+                    : RelayConfigGenerator.DescribeDestination(Config, value, ShowSecretsInPreview);
+                Raise(nameof(SelectedCommandPreview));
+            }
+        }
+    }
 
     public string NginxPreview { get => _nginxPreview; private set => Set(ref _nginxPreview, value); }
+
+    // The exact nginx.conf lines the selected destination contributes (Output Studio preview).
+    public string SelectedCommandPreview { get; private set; } = "";
 
     public string BandwidthSummary { get; private set; } = "";
 
@@ -149,6 +169,8 @@ public class MainViewModel : ObservableBase
 
     public ICommand AddDestinationCommand { get; }
     public ICommand RemoveDestinationCommand { get; }
+    public ICommand MoveDestinationLeftCommand { get; }
+    public ICommand MoveDestinationRightCommand { get; }
     public ICommand AddOverlayCommand { get; }
     public ICommand RemoveOverlayCommand { get; }
     public ICommand ExportServerCommand { get; }
@@ -189,6 +211,8 @@ public class MainViewModel : ObservableBase
         {
             if (SelectedDestination != null) RemoveDestination(SelectedDestination);
         }, _ => SelectedDestination != null);
+        MoveDestinationLeftCommand = new RelayCommand(p => MoveDestination(p as DestinationConfig, -1), p => p is DestinationConfig);
+        MoveDestinationRightCommand = new RelayCommand(p => MoveDestination(p as DestinationConfig, +1), p => p is DestinationConfig);
         AddOverlayCommand = new RelayCommand(_ => AddOverlay());
         RemoveOverlayCommand = new RelayCommand(_ =>
         {
@@ -230,8 +254,28 @@ public class MainViewModel : ObservableBase
 
     private void AttachDestination(DestinationConfig d)
     {
-        d.PropertyChanged += (_, _) => Refresh();
+        d.PropertyChanged += DestinationPropertyChanged;
+        HookLayers(d.Layers);
     }
+
+    private void DestinationPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(DestinationConfig.Layers) && sender is DestinationConfig d)
+            HookLayers(d.Layers);
+        Refresh();
+    }
+
+    private void HookLayers(ObservableCollection<OutputLayer> layers)
+    {
+        layers.CollectionChanged += (_, e) =>
+        {
+            if (e.NewItems != null) foreach (OutputLayer l in e.NewItems) l.PropertyChanged += LayerPropertyChanged;
+            Refresh();
+        };
+        foreach (var l in layers) l.PropertyChanged += LayerPropertyChanged;
+    }
+
+    private void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
 
     private void AddDestination()
     {
@@ -252,6 +296,26 @@ public class MainViewModel : ObservableBase
         Config.Destinations.Remove(dest);
         SelectedDestination = null;
         Refresh();
+    }
+
+    // Places dest at the given list index (drag-drop semantics: "remove, then insert").
+    public void MoveDestinationTo(DestinationConfig dest, int index)
+    {
+        int old = Destinations.IndexOf(dest);
+        if (old < 0) return;
+        if (index > old) index--;
+        index = Math.Clamp(index, 0, Destinations.Count - 1);
+        if (index == old) return;
+        Destinations.Move(old, index);
+        Refresh();
+    }
+
+    private void MoveDestination(DestinationConfig? dest, int delta)
+    {
+        if (dest is null) return;
+        int i = Destinations.IndexOf(dest);
+        if (i < 0) return;
+        MoveDestinationTo(dest, i + delta);
     }
 
     private void AddOverlay()
@@ -313,7 +377,7 @@ public class MainViewModel : ObservableBase
         }
     }
 
-    private DeployTarget BuildTarget()
+    public DeployTarget BuildTarget()
     {
         if (string.IsNullOrWhiteSpace(Config.ServerHost))
             throw new Exception("set your server host (IP) first - Relay tab or the field above");
@@ -493,6 +557,10 @@ public class MainViewModel : ObservableBase
         Raise(nameof(BandwidthSummary));
 
         NginxPreview = RelayConfigGenerator.GenerateNginxConf(Config, includeKeys: ShowSecretsInPreview);
+        SelectedCommandPreview = SelectedDestination is null
+            ? ""
+            : RelayConfigGenerator.DescribeDestination(Config, SelectedDestination, ShowSecretsInPreview);
+        Raise(nameof(SelectedCommandPreview));
         Save();
     }
 }

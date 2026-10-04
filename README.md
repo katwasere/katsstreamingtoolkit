@@ -28,7 +28,7 @@ flowchart LR
 
 | Piece | What it is | Where |
 |---|---|---|
-| **Toolkit app** | Windows desktop app (C#/WPF, .NET 8, x64): visual routing, destination editor, overlay manager, server-config generator, one-click SSH deploy with relay health status | `app/` |
+| **Toolkit app** | Windows desktop app (C#/WPF, .NET 8, x64): visual routing, Output Studio destination editor (reorder, encode tuning, OBS-style layer compositing for portrait outputs, true server-output preview), overlay manager, server-config generator, one-click SSH deploy with relay health status | `app/` |
 | **Chat overlays** | Transparent always-on-top windows; merged or per-platform chat; Twitch (no login), Kick, YouTube connectors included; `Ctrl+Alt+C` locks/unlocks all | built into the app |
 | **Relay** | nginx-rtmp + ffmpeg in Docker: single upstream in, per-platform pushes + portrait transcodes out | `server/` (or let the app export it) |
 | **Setup guide** | Zero-to-live VPS walkthrough written for non-ops people | `server/VPS-SETUP.md` |

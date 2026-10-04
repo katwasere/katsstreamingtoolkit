@@ -13,8 +13,44 @@ public static class ServerExporter
         File.WriteAllText(Path.Combine(folder, "docker-compose.yml"), ComposeYml);
         File.WriteAllText(Path.Combine(folder, "nginx.conf"), RelayConfigGenerator.GenerateNginxConf(cfg));
         File.WriteAllText(Path.Combine(folder, "SETUP.md"), BuildSetupGuide(cfg));
+        // Cloud VPSs (Oracle in particular) advertise a giant NIC MTU while the
+        // internet path is 1500, and dropped ICMP "fragmentation needed" then
+        // blackholes every large RTMP packet: OBS connects and dies a few
+        // seconds in, and pushes to platforms never take off. The script clamps
+        // the advertised MSS and turns on kernel MTU probing. Idempotent.
+        File.WriteAllText(Path.Combine(folder, "server-hardening.sh"), ServerHardening);
+        // Host networking: Docker no longer manages resolv.conf, and a flaky single
+        // resolver stalls the encoders before they read the stream. Redundant VCN +
+        // public resolvers with retries keep platform ingest names resolving.
+        File.WriteAllText(Path.Combine(folder, "resolv.conf"),
+            "nameserver 169.254.169.254\nnameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:3 rotate\n");
         // Keys live inside nginx.conf; keep them out of any git repo.
         File.WriteAllText(Path.Combine(folder, ".gitignore"), "nginx.conf\n");
+        ExportCustomBackgrounds(folder, cfg);
+    }
+
+    private static void ExportCustomBackgrounds(string folder, AppConfig cfg)
+    {
+        foreach (var dest in cfg.Destinations.Where(d => d.PortraitStyle == PortraitStyle.Custom && !string.IsNullOrWhiteSpace(d.CustomBackgroundPath)))
+        {
+            if (!File.Exists(dest.CustomBackgroundPath))
+                throw new Exception($"custom background for '{dest.Name}' not found: {dest.CustomBackgroundPath}");
+            string backgrounds = Path.Combine(folder, "backgrounds");
+            Directory.CreateDirectory(backgrounds);
+            File.Copy(dest.CustomBackgroundPath, Path.Combine(backgrounds, RelayConfigGenerator.BackgroundFileName(dest)), true);
+        }
+
+        foreach (var dest in cfg.Destinations)
+        {
+            foreach (var layer in dest.Layers.Where(l => l.Type == LayerType.Image && !string.IsNullOrWhiteSpace(l.Path)))
+            {
+                if (!File.Exists(layer.Path))
+                    throw new Exception($"overlay image for '{dest.Name}' / '{layer.Name}' not found: {layer.Path}");
+                string backgrounds = Path.Combine(folder, "backgrounds");
+                Directory.CreateDirectory(backgrounds);
+                File.Copy(layer.Path, Path.Combine(backgrounds, RelayConfigGenerator.OverlayFileName(layer)), true);
+            }
+        }
     }
 
     private static string Dockerfile =>
@@ -38,14 +74,62 @@ public static class ServerExporter
             image: kat-relay
             container_name: kat-relay
             restart: unless-stopped
-            ports:
-              - "1935:1935"
-              - "127.0.0.1:8080:8080"
+            # Host networking: nginx binds 1935/8080 directly on the VPS. Docker's
+            # forwarded-port path (DNAT + FORWARD chain) has been observed dropping
+            # RTMP data packets on Oracle Cloud images; host mode sidesteps it all.
+            network_mode: host
+            volumes:
+              # Host networking: Docker no longer manages resolv.conf, and a flaky
+              # single resolver would stall the encoders before they read the
+              # stream - supply a redundant resolver setup instead.
+              - ./resolv.conf:/etc/resolv.conf:ro
+              - ./backgrounds:/var/kat-backgrounds:ro
             logging:
               driver: json-file
               options:
                 max-size: "10m"
                 max-file: "3"
+        """;
+
+    // Clamps the TCP MSS the server advertises and enables kernel MTU probing.
+    // Fixes the classic cloud-VPS failure: RTMP handshake succeeds (small
+    // packets), video data (big packets) is silently dropped, OBS disconnects
+    // after a few seconds and platform pushes stall. Safe to re-run.
+    private static string ServerHardening => """
+        #!/bin/sh
+        # Oracle Cloud VNICs advertise MTU 9000 while the internet uses 1500, and
+        # their security lists usually drop ICMP "fragmentation needed". TCP then
+        # silently drops every large segment: OBS connects, stalls and disconnects
+        # seconds into the stream, and pushes out to the platforms never start.
+        # This clamps the MSS the server advertises in SYN replies and lets the
+        # kernel probe the real path MTU as a fallback.
+
+        CLAMP="-p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+
+        iptables -t mangle -C OUTPUT $CLAMP 2>/dev/null || iptables -t mangle -A OUTPUT $CLAMP
+        iptables -t mangle -C FORWARD $CLAMP 2>/dev/null || iptables -t mangle -A FORWARD $CLAMP
+
+        printf "net.ipv4.tcp_mtu_probing=1\n" > /etc/sysctl.d/99-kat-relay-mtu.conf
+        sysctl -w net.ipv4.tcp_mtu_probing=1 >/dev/null
+
+        # Re-apply the clamp automatically after a server reboot.
+        cat > /etc/systemd/system/kat-relay-mss.service <<'UNIT'
+        [Unit]
+        Description=Clamp TCP MSS so RTMP video survives cloud MTU mismatch (kat-relay)
+        After=network.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/bin/sh -c 'iptables -t mangle -C OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu; iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu'
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
+        UNIT
+        systemctl daemon-reload 2>/dev/null
+        systemctl enable kat-relay-mss.service >/dev/null 2>&1
+
+        echo "MTU/MSS hardening applied: MSS clamp on OUTPUT+FORWARD, tcp_mtu_probing=1, re-applied on boot."
         """;
 
     private static string BuildSetupGuide(AppConfig cfg)
@@ -79,6 +163,10 @@ public static class ServerExporter
         sb.AppendLine("```bash");
         sb.AppendLine("cd /opt/kat-relay && docker compose up -d --build");
         sb.AppendLine("docker compose logs -f   # Ctrl+C to stop watching");
+        sb.AppendLine("```");
+        sb.AppendLine("If you deploy by hand, also run the network hardening once (the toolkit's 'Deploy to server' button runs it on every deploy):");
+        sb.AppendLine("```bash");
+        sb.AppendLine("sudo sh /opt/kat-relay/server-hardening.sh   # fixes OBS connecting then dropping a few seconds in (cloud MTU mismatch)");
         sb.AppendLine("```");
         sb.AppendLine();
         sb.AppendLine("## 5. Point OBS at it");

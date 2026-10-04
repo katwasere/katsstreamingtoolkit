@@ -21,6 +21,36 @@ public class BoolToVisibilityConverter : IValueConverter
         => value is Visibility vis && vis == Visibility.Visible;
 }
 
+public class NullToVisibilityConverter : IValueConverter
+{
+    public bool Inverted { get; set; }
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        bool isNull = value is null;
+        if (Inverted) isNull = !isNull;
+        return isNull ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public class EqualsToVisibilityConverter : IValueConverter
+{
+    public bool Inverted { get; set; }
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        bool equal = string.Equals(value?.ToString(), parameter?.ToString(), StringComparison.Ordinal);
+        if (Inverted) equal = !equal;
+        return equal ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 public class LightBrushConverter : IValueConverter
 {
     private static readonly SolidColorBrush Ok = Freeze(Color.FromRgb(0x4C, 0xAF, 0x50));
