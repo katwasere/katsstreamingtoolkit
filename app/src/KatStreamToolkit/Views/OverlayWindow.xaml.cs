@@ -163,6 +163,12 @@ public partial class OverlayWindow : Window
             specs.Add(new ChatSourceSpec("YouTube", $"yt:{url.ToLowerInvariant()}",
                 () => new YouTubeChatClient(url)));
         }
+        if (wants(ChatMode.TikTok) && !string.IsNullOrWhiteSpace(cfg.TikTokHandle))
+        {
+            var handle = cfg.TikTokHandle.Trim().TrimStart('@').ToLowerInvariant();
+            specs.Add(new ChatSourceSpec("TikTok", $"tiktok:{handle}",
+                () => new TikTokChatClient(handle)));
+        }
         return specs;
     }
 

@@ -2,8 +2,10 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
+using System.Media;
 using System.Text;
 using System.Windows;
+using KatStreamToolkit.Chat;
 using KatStreamToolkit.Models;
 using KatStreamToolkit.Services;
 using Microsoft.Win32;
@@ -79,6 +81,93 @@ public class MainViewModel : ObservableBase
         }
     }
 
+    // Euler Stream API key (TikTok chat). Secret like everything else here: it
+    // lives in secrets.json only, never in config.json.
+    public string EulerApiKey
+    {
+        get => _secrets.EulerApiKey;
+        set
+        {
+            if (_secrets.EulerApiKey == value) return;
+            _secrets.EulerApiKey = value;
+            SyncEulerKey();
+            ScheduleSave();
+        }
+    }
+
+    private void SyncEulerKey() =>
+        TikTokChatClient.ApiKey = string.IsNullOrWhiteSpace(_secrets.EulerApiKey)
+            ? null
+            : _secrets.EulerApiKey.Trim();
+
+    // ---------- OBS control (obs-websocket) ----------
+
+    private ObsWebSocketClient? _obs;
+
+    public string ObsPassword
+    {
+        get => _secrets.ObsPassword;
+        set
+        {
+            if (_secrets.ObsPassword == value) return;
+            _secrets.ObsPassword = value;
+            RecreateObsClient();
+            ScheduleSave();
+        }
+    }
+
+    public string ObsConnectionText { get; private set; } = "obs control off";
+
+    public VerifyLight ObsConnectionLight { get; private set; } = VerifyLight.Unknown;
+
+    public string GoLiveStatusText { get; private set; } = "not started";
+
+    private void EnsureObsClient()
+    {
+        if (Config.ObsEnabled && _obs == null)
+        {
+            RecreateObsClient();
+        }
+        else if (!Config.ObsEnabled && _obs != null)
+        {
+            _obs.Dispose();
+            _obs = null;
+            SetObsStatus("obs control off", VerifyLight.Unknown);
+        }
+    }
+
+    private void RecreateObsClient()
+    {
+        _obs?.Dispose();
+        _obs = null;
+        if (!Config.ObsEnabled) return;
+        _obs = new ObsWebSocketClient(Config.ObsWebSocketUrl, ObsPassword);
+        _obs.StatusChanged += s => Application.Current?.Dispatcher.BeginInvoke(() =>
+            SetObsStatus("obs: " + s,
+                s == "connected" ? VerifyLight.Ok
+                : s.StartsWith("wrong password") ? VerifyLight.Error
+                : VerifyLight.Idle));
+        _obs.Start();
+        SetObsStatus("obs: connecting...", VerifyLight.Idle);
+    }
+
+    private void SetObsStatus(string text, VerifyLight light)
+    {
+        ObsConnectionText = text;
+        ObsConnectionLight = light;
+        Raise(nameof(ObsConnectionText));
+        Raise(nameof(ObsConnectionLight));
+    }
+
+    private void SetGoLiveStatus(string text)
+    {
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            GoLiveStatusText = text;
+            Raise(nameof(GoLiveStatusText));
+        });
+    }
+
     private readonly StringBuilder _deployLog = new();
     private int _statusBusy;
     private int _monitorBusy;
@@ -111,20 +200,338 @@ public class MainViewModel : ObservableBase
         _ => "not connected",
     };
 
-    private void ApplySnapshot(bool reachable, bool receiving)
+    private void ApplyHealth(DeployTarget target, RelayHealthSnapshot snap)
     {
+        bool reachable = snap.Reachable;
+        bool receiving = snap.Receiving;
+
         RelayLight = reachable ? VerifyLight.Ok : VerifyLight.Error;
         ObsLight = !reachable ? VerifyLight.Unknown : receiving ? VerifyLight.Ok : VerifyLight.Idle;
         RelayStatusText = !reachable
             ? "relay not responding - deploy the bundle first"
             : receiving ? "receiving your stream" : "relay running, waiting for OBS";
-        foreach (var d in Destinations)
-            d.PushLight = !reachable ? VerifyLight.Unknown : receiving ? VerifyLight.Ok : VerifyLight.Idle;
         Raise(nameof(ObsLight));
         Raise(nameof(ObsLightText));
         Raise(nameof(RelayLight));
         Raise(nameof(RelayLightText));
         Raise(nameof(RelayStatusText));
+
+        // A deploy/test restarts containers and drops publishers by design -
+        // track state but alarm over nothing.
+        if (IsRunning)
+        {
+            _wasReachable = reachable;
+            _wasPublishing = receiving;
+            return;
+        }
+
+        // Relay down, debounced over two ticks so a single SSH hiccup stays silent.
+        if (!reachable)
+        {
+            _unreachableTicks++;
+            if (_unreachableTicks >= 2)
+                RaiseAlarm(new WatchdogAlarm("relay",
+                    "RELAY DOWN - the relay stopped answering health checks. Click 'Restart relay', or redeploy from the Deploy tab if the container stays gone.", null));
+        }
+        else
+        {
+            _unreachableTicks = 0;
+            ClearAlarm("relay");
+        }
+
+        // Publisher transition: the stream was arriving and now it is not.
+        if (reachable && _wasPublishing == true && !receiving)
+            RaiseAlarm(new WatchdogAlarm("obs",
+                "OBS FEED DROPPED - the relay was receiving your stream and now sees no publisher. OBS usually reconnects by itself; if this repeats, check OBS and the server's TCP port 1935.", null));
+        else if (receiving)
+            ClearAlarm("obs");
+
+        foreach (var d in Destinations)
+        {
+            if (!reachable)
+            {
+                d.PushLight = VerifyLight.Unknown;
+                ClearAlarm("enc:" + d.Id);
+                ClearAlarm("push:" + d.Id);
+                continue;
+            }
+
+            bool routed = d.Enabled
+                          && (d.Orientation == Orientation.Portrait || d.PortraitStyle == PortraitStyle.Custom)
+                          && !string.IsNullOrWhiteSpace(d.IngestUrl);
+
+            if (!receiving)
+            {
+                // Nothing publishing: no per-destination truth exists.
+                d.PushLight = d.Enabled ? VerifyLight.Idle : VerifyLight.Unknown;
+                ClearAlarm("enc:" + d.Id);
+                ClearAlarm("push:" + d.Id);
+                _encoderDownTicks.Remove(d.Id);
+                _pushErrorTicks.Remove(d.Id);
+                continue;
+            }
+
+            if (routed)
+            {
+                bool running = snap.Encoders.Contains(d.Id);
+                snap.SnapshotAges.TryGetValue(d.Id, out int age);
+                if (running && age >= 0 && age <= 30)
+                    _encoderWasHealthy[d.Id] = true;
+
+                if (!running)
+                {
+                    int ticks = _encoderDownTicks.TryGetValue(d.Id, out int seen) ? seen + 1 : 1;
+                    _encoderDownTicks[d.Id] = ticks;
+                    if (ticks >= 2)
+                    {
+                        string? reason = DeployService.FindLogReason(snap.LogTail, Config, d);
+                        RaiseAlarm(new WatchdogAlarm("enc:" + d.Id,
+                            $"'{d.Name}' ENCODER IS DOWN - your stream is reaching the relay, but this output's ffmpeg is not running (it keeps dying)."
+                            + (reason != null ? " Relay log: " + reason : ""), d.Id));
+                        d.PushLight = VerifyLight.Error;
+                    }
+                    else
+                    {
+                        d.PushLight = VerifyLight.Idle;
+                    }
+                    continue;
+                }
+                _encoderDownTicks.Remove(d.Id);
+
+                // Frozen: this encoder produced fresh frames before and its
+                // snapshot has stopped advancing while the stream still flows.
+                bool wasHealthy = _encoderWasHealthy.TryGetValue(d.Id, out bool wh) && wh;
+                if (wasHealthy && age > 60)
+                {
+                    RaiseAlarm(new WatchdogAlarm("enc:" + d.Id,
+                        $"'{d.Name}' ENCODER FROZEN - alive but no new frames for ~{age}s.", d.Id) { CanRestart = true });
+                    d.PushLight = VerifyLight.Error;
+                    TryAutoRestartEncoder(d);
+                    continue;
+                }
+
+                ClearAlarm("enc:" + d.Id);
+                d.PushLight = VerifyLight.Ok;
+            }
+            else if (d.Enabled)
+            {
+                // Landscape push: nginx reconnects on its own, so the only
+                // failure signal is repeated relay-log errors naming the host.
+                string? host = DeployService.IngestHost(d.IngestUrl);
+                bool erroring = host != null && DeployService.LogHasHostError(snap.LogTail, host);
+                if (erroring)
+                {
+                    int ticks = _pushErrorTicks.TryGetValue(d.Id, out int pe) ? pe + 1 : 1;
+                    _pushErrorTicks[d.Id] = ticks;
+                    if (ticks >= 2)
+                    {
+                        string? reason = DeployService.FindLogReason(snap.LogTail, Config, d);
+                        RaiseAlarm(new WatchdogAlarm("push:" + d.Id,
+                            $"'{d.Name}' PUSH FAILING - the relay cannot push to {host}."
+                            + (reason != null ? " Relay log: " + reason : ""), d.Id));
+                        d.PushLight = VerifyLight.Error;
+                    }
+                }
+                else
+                {
+                    _pushErrorTicks.Remove(d.Id);
+                    ClearAlarm("push:" + d.Id);
+                    d.PushLight = VerifyLight.Ok;
+                }
+            }
+            else
+            {
+                d.PushLight = VerifyLight.Unknown;
+            }
+        }
+
+        _wasReachable = reachable;
+        _wasPublishing = receiving;
+    }
+
+    // ---------- watchdog state ----------
+    private bool? _wasReachable;
+    private bool? _wasPublishing;
+    private int _unreachableTicks;
+    private readonly Dictionary<Guid, int> _encoderDownTicks = new();
+    private readonly Dictionary<Guid, bool> _encoderWasHealthy = new();
+    private readonly Dictionary<Guid, int> _pushErrorTicks = new();
+    private readonly Dictionary<Guid, DateTime> _lastAutoRestart = new();
+
+    public ObservableCollection<WatchdogAlarm> Alarms { get; } = new();
+
+    public bool HasAlarms => Alarms.Count > 0;
+
+    private void RaiseAlarm(WatchdogAlarm alarm)
+    {
+        var existing = Alarms.FirstOrDefault(a => a.Id == alarm.Id);
+        if (existing != null)
+        {
+            // Update in place without re-triggering the alarm sound.
+            if (existing.Text != alarm.Text) existing.Text = alarm.Text;
+            return;
+        }
+        Alarms.Add(alarm);
+        Raise(nameof(HasAlarms));
+        if (Config.AlarmSound)
+        {
+            try { System.Media.SystemSounds.Exclamation.Play(); } catch { }
+        }
+    }
+
+    private void ClearAlarm(string id)
+    {
+        var existing = Alarms.FirstOrDefault(a => a.Id == id);
+        if (existing == null) return;
+        Alarms.Remove(existing);
+        Raise(nameof(HasAlarms));
+    }
+
+    private void ClearAllAlarms()
+    {
+        Alarms.Clear();
+        Raise(nameof(HasAlarms));
+    }
+
+    private void TryAutoRestartEncoder(DestinationConfig d)
+    {
+        if (!Config.WatchdogAutoRestart) return;
+        if (_lastAutoRestart.TryGetValue(d.Id, out var last) &&
+            DateTime.UtcNow - last < TimeSpan.FromSeconds(90)) return;
+        _lastAutoRestart[d.Id] = DateTime.UtcNow;
+        Log($"[watchdog] '{d.Name}' encoder frozen - killing it so nginx respawns a fresh one");
+        RestartEncoderInner(d);
+    }
+
+    private void RestartEncoderInner(DestinationConfig d)
+    {
+        try
+        {
+            var target = BuildTarget();
+            string command =
+                $"sh -c 'docker exec kat-relay pkill -f kat-preview-{d.Id:N}' || sudo -n docker exec kat-relay pkill -f kat-preview-{d.Id:N}";
+            Task.Run(() =>
+            {
+                try
+                {
+                    RelayPreviewService.RunOnServer(target, command, 30);
+                    Log($"[watchdog] killed '{d.Name}' encoder - nginx respawns it automatically");
+                }
+                catch (Exception ex)
+                {
+                    Log("[watchdog] could not restart the encoder: " + ex.Message);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log("[watchdog] could not restart the encoder: " + ex.Message);
+        }
+    }
+
+    private void RestartRelay(Action<string> log)
+    {
+        log("restarting the relay container...");
+        string output = RelayPreviewService.RunOnServer(BuildTarget(),
+            "sh -c 'docker restart kat-relay' || sudo -n docker restart kat-relay", 90);
+        log("docker restart kat-relay: " + (string.IsNullOrWhiteSpace(output) ? "done" : output));
+        log("the relay is booting - OBS reconnects by itself and every encoder restarts with it");
+    }
+
+    // ---------- go-live orchestration ----------
+
+    private async Task GoLiveFlowAsync(Action<string> log)
+    {
+        SetGoLiveStatus("checking the relay...");
+        var target = BuildTarget();
+        log("[go-live] checking the relay...");
+
+        var (reachable, receiving) = DeployService.FetchSnapshot(target);
+        if (!reachable)
+            throw new Exception("the relay is not responding - deploy the bundle first (Deploy tab)");
+        log(receiving
+            ? "[go-live] the relay is already receiving a stream"
+            : "[go-live] relay is up");
+
+        if (!Destinations.Any(d => d.Enabled))
+            log("[go-live] note: no destinations are enabled - the stream will arrive but go nowhere");
+
+        var obs = _obs;
+        if (Config.ObsEnabled)
+        {
+            SetGoLiveStatus("talking to OBS...");
+            if (obs is not { IsConnected: true })
+                throw new Exception("OBS control is on but not connected (is OBS running with obs-websocket enabled, and the port/password right?)");
+
+            bool active = await obs.GetStreamingStatus();
+            if (active)
+            {
+                log("[go-live] OBS is already streaming");
+            }
+            else
+            {
+                log("[go-live] starting OBS streaming...");
+                await obs.StartStream();
+                log("[go-live] OBS started");
+            }
+        }
+        else
+        {
+            log("[go-live] OBS control is off - start streaming in OBS yourself; this only verifies the relay");
+        }
+
+        SetGoLiveStatus("waiting for your stream to arrive...");
+        log("[go-live] waiting for the relay to see your stream...");
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (_, rec) = DeployService.FetchSnapshot(target);
+            if (rec)
+            {
+                log("[go-live] LIVE - the relay is receiving your stream and pushing every enabled destination. The watchdog and the destination lights take it from here.");
+                SetGoLiveStatus("LIVE");
+                return;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        throw new Exception(
+            "the relay still sees no stream after 45s - in OBS set Server rtmp://" + target.Host +
+            "/live and Key = your stream name, then try again");
+    }
+
+    private async Task EndStreamFlowAsync(Action<string> log)
+    {
+        SetGoLiveStatus("ending the stream...");
+        log("[go-live] ending the stream...");
+        var target = BuildTarget();
+
+        if (Config.ObsEnabled)
+        {
+            var obs = _obs;
+            if (obs is not { IsConnected: true })
+                throw new Exception("OBS control is on but not connected (is OBS running?)");
+            await obs.StopStream();
+            log("[go-live] OBS stopped streaming");
+        }
+        else
+        {
+            log("[go-live] OBS control is off - stop streaming in OBS yourself");
+        }
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (reachable, receiving) = DeployService.FetchSnapshot(target);
+            if (reachable && !receiving)
+            {
+                log("[go-live] done - the relay no longer sees a publisher. Every output stopped with it.");
+                SetGoLiveStatus("ended");
+                return;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        log("[go-live] note: the relay still shows a publisher - OBS may reconnect on its own (drop_idle_publisher clears it within 30s).");
+        SetGoLiveStatus("ended (relay slow to notice)");
     }
 
     private void MonitorTick()
@@ -137,7 +544,6 @@ public class MainViewModel : ObservableBase
         }
         catch
         {
-            ApplySnapshot(false, false);
             RelayLight = VerifyLight.Unknown;
             ObsLight = VerifyLight.Unknown;
             RelayStatusText = "not checked yet";
@@ -147,6 +553,12 @@ public class MainViewModel : ObservableBase
             Raise(nameof(RelayLight));
             Raise(nameof(RelayLightText));
             Raise(nameof(RelayStatusText));
+            // No target = no watchdog: state resets so appearing later does not
+            // look like a "relay down"/"OBS dropped" transition.
+            _unreachableTicks = 0;
+            _wasReachable = null;
+            _wasPublishing = null;
+            ClearAllAlarms();
             Interlocked.Exchange(ref _monitorBusy, 0);
             return;
         }
@@ -155,17 +567,97 @@ public class MainViewModel : ObservableBase
         {
             try
             {
-                return DeployService.FetchSnapshot(target);
+                return DeployService.FetchHealthSnapshot(target, Config);
             }
             catch
             {
-                return (false, false);
+                return RelayHealthSnapshot.Down;
             }
         }).ContinueWith(t =>
         {
-            ApplySnapshot(t.Result.Item1, t.Result.Item2);
+            ApplyHealth(target, t.Result);
             Interlocked.Exchange(ref _monitorBusy, 0);
         }, ui);
+    }
+
+    private int _liveCheckBusy;
+
+    // Per-destination live checks: query each platform for "actually live" and
+    // light the destination card's second lamp. The relay cannot see what happens
+    // after its push, so a green push light next to a dark live light means the
+    // server is sending but the platform is not showing it.
+    private void LiveCheckTick()
+    {
+        if (Interlocked.CompareExchange(ref _liveCheckBusy, 1, 0) != 0) return;
+        var jobs = new List<(DestinationConfig Dest, Platform Platform, string Handle)>();
+        foreach (var d in Destinations)
+        {
+            if (!d.Enabled || d.Platform == Platform.Custom)
+            {
+                d.LiveLight = VerifyLight.Unknown;
+                continue;
+            }
+            var handle = ResolveHandle(d);
+            if (handle == null)
+            {
+                d.LiveLight = VerifyLight.Unknown;
+                continue;
+            }
+            jobs.Add((d, d.Platform, handle));
+        }
+        if (jobs.Count == 0)
+        {
+            Interlocked.Exchange(ref _liveCheckBusy, 0);
+            return;
+        }
+        var ui = TaskScheduler.FromCurrentSynchronizationContext();
+        Task.Run(async () =>
+        {
+            var results = new List<(DestinationConfig Dest, LiveState State)>();
+            // Sequential on purpose: four platforms polled in parallel every 30s
+            // invites rate limiting; the 25s cap keeps a slow platform from
+            // stalling the next tick.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            foreach (var (dest, platform, handle) in jobs)
+            {
+                try
+                {
+                    results.Add((dest, await LiveCheckService.CheckAsync(platform, handle, cts.Token)));
+                }
+                catch
+                {
+                    results.Add((dest, LiveState.Unknown));
+                }
+            }
+            return results;
+        }).ContinueWith(t =>
+        {
+            if (t.Status == TaskStatus.RanToCompletion && t.Result != null)
+                foreach (var (dest, state) in t.Result)
+                    dest.LiveLight = state switch
+                    {
+                        LiveState.Live => VerifyLight.Ok,
+                        LiveState.Offline => VerifyLight.Idle,
+                        _ => VerifyLight.Unknown,
+                    };
+            Interlocked.Exchange(ref _liveCheckBusy, 0);
+        }, ui);
+    }
+
+    private string? ResolveHandle(DestinationConfig d)
+    {
+        var mc = Config.MyChannels;
+        var specific = string.IsNullOrWhiteSpace(d.ChannelHandle) ? null : d.ChannelHandle.Trim();
+        return d.Platform switch
+        {
+            Platform.Twitch => specific ?? Blank(mc.TwitchChannel),
+            Platform.Kick => specific ?? Blank(mc.KickChannel),
+            Platform.YouTube => specific ?? Blank(mc.YouTubeUrl),
+            Platform.TikTok => specific ?? Blank(mc.TikTokHandle),
+            _ => null,
+        };
+
+        static string? Blank(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
     }
 
     public ICommand AddDestinationCommand { get; }
@@ -181,11 +673,16 @@ public class MainViewModel : ObservableBase
     public ICommand TestConnectionCommand { get; }
     public ICommand DeployCommand { get; }
     public ICommand RefreshStatusCommand { get; }
+    public ICommand RestartRelayCommand { get; }
+    public ICommand RestartEncoderCommand { get; }
+    public ICommand GoLiveCommand { get; }
+    public ICommand EndStreamCommand { get; }
 
     private readonly DispatcherTimer _autoSave;
     private readonly DispatcherTimer _saveDebounce;
     private readonly DispatcherTimer _autoStatusTimer;
     private readonly DispatcherTimer _monitorTimer;
+    private readonly DispatcherTimer _liveCheckTimer;
 
     // Debounced save: Refresh() is wired to every property change (sliders,
     // text boxes), so saving inline rewrote config.json dozens of times per
@@ -201,6 +698,7 @@ public class MainViewModel : ObservableBase
         Config = ConfigStore.Load();
         _secrets = LoadSecrets();
         SecretsStore.Apply(Config, _secrets);
+        SyncEulerKey();
 
         // Attach/detach destination handlers ONLY here (CollectionChanged owns the
         // lifetime) - the old ctor pre-attach loop double-subscribed everything.
@@ -218,6 +716,11 @@ public class MainViewModel : ObservableBase
         };
         Config.Upstream.PropertyChanged += (_, _) => Refresh();
         Config.MyChannels.PropertyChanged += (_, _) => ScheduleSave();
+        Config.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(AppConfig.ObsEnabled) or nameof(AppConfig.ObsWebSocketUrl))
+                EnsureObsClient();
+        };
 
         // Created BEFORE the collections below are populated: adding the loaded
         // destinations fires CollectionChanged -> Refresh -> ScheduleSave, and a
@@ -255,6 +758,18 @@ public class MainViewModel : ObservableBase
             Raise(nameof(RelayStatusText));
         }), _ => !IsRunning);
         RefreshStatusCommand = new RelayCommand(_ => RefreshStatus());
+        RestartRelayCommand = new RelayCommand(_ => RunBackground(RestartRelay), _ => !IsRunning);
+        RestartEncoderCommand = new RelayCommand(p =>
+        {
+            if (p is WatchdogAlarm alarm && alarm.DestinationId is Guid id)
+            {
+                var d = Destinations.FirstOrDefault(x => x.Id == id);
+                if (d != null) RestartEncoderInner(d);
+            }
+        }, _ => !IsRunning);
+        GoLiveCommand = new RelayCommand(_ => RunBackground(GoLiveFlowAsync), _ => !IsRunning);
+        EndStreamCommand = new RelayCommand(_ => RunBackground(EndStreamFlowAsync), _ => !IsRunning);
+        EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
         foreach (var o in Config.Overlays) Overlays.Add(o);
@@ -272,7 +787,12 @@ public class MainViewModel : ObservableBase
         _monitorTimer.Start();
         MonitorTick();
 
+        _liveCheckTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _liveCheckTimer.Tick += (_, _) => LiveCheckTick();
+        _liveCheckTimer.Start();
+
         Refresh();
+        LiveCheckTick();
     }
 
     private void AttachDestination(DestinationConfig d)
@@ -293,6 +813,12 @@ public class MainViewModel : ObservableBase
         {
             UnhookLayers(d);
             HookLayers(d);
+        }
+        if (e.PropertyName is nameof(DestinationConfig.ChannelHandle)
+            or nameof(DestinationConfig.Enabled)
+            or nameof(DestinationConfig.Platform))
+        {
+            LiveCheckTick();
         }
         Refresh();
     }
@@ -379,6 +905,7 @@ public class MainViewModel : ObservableBase
             TwitchChannel = Config.MyChannels.TwitchChannel,
             KickChannel = Config.MyChannels.KickChannel,
             YouTubeUrl = Config.MyChannels.YouTubeUrl,
+            TikTokHandle = Config.MyChannels.TikTokHandle,
         };
         if (Overlays.Count == 0)
         {
@@ -458,16 +985,26 @@ public class MainViewModel : ObservableBase
 
     private void RunBackground(Action<Action<string>> work)
     {
+        RunBackground(log =>
+        {
+            work(log);
+            return Task.CompletedTask;
+        });
+    }
+
+    private void RunBackground(Func<Action<string>, Task> work)
+    {
         if (IsRunning) return;
         IsRunning = true;
         try
         {
-            var target = BuildTarget();
-            Task.Run(() =>
+            // Validated once up front so the button fails fast with a clear message.
+            BuildTarget();
+            Task.Run(async () =>
             {
                 try
                 {
-                    work(Log);
+                    await work(Log);
                 }
                 catch (Exception ex)
                 {
@@ -574,7 +1111,11 @@ public class MainViewModel : ObservableBase
         Config.KeysFilePath = dialog.FileName;
         _secrets = SecretsStore.Load(dialog.FileName);
         SecretsStore.Apply(Config, _secrets);
+        SyncEulerKey();
+        RecreateObsClient();
         Raise(nameof(KeysFilePathDisplay));
+        Raise(nameof(EulerApiKey));
+        Raise(nameof(ObsPassword));
         Refresh();
     }
 
@@ -591,8 +1132,16 @@ public class MainViewModel : ObservableBase
 
         SecretsStore.SaveFromConfig(dialog.FileName, Config, _secrets);
         Config.KeysFilePath = dialog.FileName;
-        _secrets = SecretsStore.Capture(Config);
+        // Reload the file we just wrote instead of Capture(): Capture builds from
+        // config alone and would drop SshPassword/EulerApiKey out of _secrets,
+        // silently wiping them from the new file on the next save.
+        _secrets = SecretsStore.Load(dialog.FileName);
+        SyncEulerKey();
+        RecreateObsClient();
         Raise(nameof(KeysFilePathDisplay));
+        Raise(nameof(SshPassword));
+        Raise(nameof(EulerApiKey));
+        Raise(nameof(ObsPassword));
         Save();
     }
 

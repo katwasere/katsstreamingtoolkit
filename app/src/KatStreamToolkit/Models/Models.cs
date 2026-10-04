@@ -30,6 +30,7 @@ public enum ChatMode
     Twitch,
     Kick,
     YouTube,
+    TikTok,
 }
 
 public enum VerifyLight
@@ -118,10 +119,12 @@ public class MyChannelsConfig : ObservableBase
     private string _twitchChannel = "";
     private string _kickChannel = "";
     private string _youTubeUrl = "";
+    private string _tikTokHandle = "";
 
     public string TwitchChannel { get => _twitchChannel; set => Set(ref _twitchChannel, value); }
     public string KickChannel { get => _kickChannel; set => Set(ref _kickChannel, value); }
     public string YouTubeUrl { get => _youTubeUrl; set => Set(ref _youTubeUrl, value); }
+    public string TikTokHandle { get => _tikTokHandle; set => Set(ref _tikTokHandle, value); }
 }
 
 public class AppConfig : ObservableBase
@@ -131,6 +134,10 @@ public class AppConfig : ObservableBase
     private string _serverHost = "";
     private List<DestinationConfig> _destinations = new();
     private List<OverlayConfig> _overlays = new();
+    private bool _watchdogAutoRestart = true;
+    private bool _alarmSound = true;
+    private bool _obsEnabled;
+    private string _obsWebSocketUrl = "ws://127.0.0.1:4455";
 
     public UpstreamConfig Upstream { get => _upstream; set => Set(ref _upstream, value); }
     public MyChannelsConfig MyChannels { get => _myChannels; set => Set(ref _myChannels, value); }
@@ -151,6 +158,39 @@ public class AppConfig : ObservableBase
     public string RemotePath { get => _remotePath; set => Set(ref _remotePath, value); }
     public List<DestinationConfig> Destinations { get => _destinations; set => Set(ref _destinations, value); }
     public List<OverlayConfig> Overlays { get => _overlays; set => Set(ref _overlays, value); }
+
+    // Watchdog: kill a frozen encoder so nginx respawns it, and beep when a new
+    // alarm appears. Both persist with the rest of the config.
+    public bool WatchdogAutoRestart { get => _watchdogAutoRestart; set => Set(ref _watchdogAutoRestart, value); }
+    public bool AlarmSound { get => _alarmSound; set => Set(ref _alarmSound, value); }
+
+    // OBS control via obs-websocket (same PC by default). The password lives in
+    // secrets.json, never here.
+    public bool ObsEnabled { get => _obsEnabled; set => Set(ref _obsEnabled, value); }
+    public string ObsWebSocketUrl { get => _obsWebSocketUrl; set => Set(ref _obsWebSocketUrl, value); }
+}
+
+// One active watchdog alarm, shown in the red banner. Id is stable per condition
+// ("relay", "obs", "enc:<destId>", "push:<destId>") so alarms update in place
+// and clear themselves when the condition goes away.
+public sealed class WatchdogAlarm : ObservableBase
+{
+    private string _text;
+
+    public WatchdogAlarm(string id, string text, Guid? destinationId)
+    {
+        Id = id;
+        _text = text;
+        DestinationId = destinationId;
+    }
+
+    public string Id { get; }
+    public Guid? DestinationId { get; }
+
+    public string Text { get => _text; set => Set(ref _text, value); }
+
+    // Encoder alarms offer a one-click "kill it so nginx respawns it" action.
+    public bool CanRestart { get; init; }
 }
 
 public class DestinationConfig : ObservableBase
@@ -177,6 +217,12 @@ public class DestinationConfig : ObservableBase
     private double _fgY;
     private double _fgScale;
     private string _customBackgroundPath = "";
+    private string _channelHandle = "";
+
+    // Platform account this destination belongs to (Twitch login, Kick slug,
+    // YouTube URL/@handle, TikTok @handle). Powers the per-destination live
+    // checks; empty falls back to the matching "My channels" entry.
+    public string ChannelHandle { get => _channelHandle; set => Set(ref _channelHandle, value); }
 
     public Guid Id { get => _id; set => Set(ref _id, value); }
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -229,6 +275,28 @@ public class DestinationConfig : ObservableBase
             VerifyLight.Error => "unreachable",
             _ => "unknown",
         };
+
+    // Platform-side live state ("actually live on the platform"), refreshed by
+    // LiveCheckService - the relay-side PushLight cannot see past the push.
+    private VerifyLight _liveLight = VerifyLight.Unknown;
+
+    [JsonIgnore]
+    public VerifyLight LiveLight
+    {
+        get => _liveLight;
+        set { if (Set(ref _liveLight, value)) Raise(nameof(LiveLightText)); }
+    }
+
+    [JsonIgnore]
+    public string LiveLightText => !Enabled
+        ? "off"
+        : LiveLight switch
+        {
+            VerifyLight.Ok => "live on platform",
+            VerifyLight.Idle => "not live yet",
+            VerifyLight.Error => "live check failed",
+            _ => "platform: unknown",
+        };
 }
 
 public class OverlayConfig : ObservableBase
@@ -240,6 +308,7 @@ public class OverlayConfig : ObservableBase
     private string _kickChannel = "";
     private string _kickChatroomId = "";
     private string _youTubeUrl = "";
+    private string _tikTokHandle = "";
     private double _x;
     private double _y;
     private double _width = 420;
@@ -257,6 +326,7 @@ public class OverlayConfig : ObservableBase
     public string KickChannel { get => _kickChannel; set => Set(ref _kickChannel, value); }
     public string KickChatroomId { get => _kickChatroomId; set => Set(ref _kickChatroomId, value); }
     public string YouTubeUrl { get => _youTubeUrl; set => Set(ref _youTubeUrl, value); }
+    public string TikTokHandle { get => _tikTokHandle; set => Set(ref _tikTokHandle, value); }
     public double X { get => _x; set => Set(ref _x, value); }
     public double Y { get => _y; set => Set(ref _y, value); }
     public double Width { get => _width; set => Set(ref _width, value); }

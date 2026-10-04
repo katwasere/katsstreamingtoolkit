@@ -41,6 +41,7 @@ public partial class MainWindow : Window
                 or nameof(OverlayConfig.KickChannel)
                 or nameof(OverlayConfig.KickChatroomId)
                 or nameof(OverlayConfig.YouTubeUrl)
+                or nameof(OverlayConfig.TikTokHandle)
                 or nameof(OverlayConfig.Mode))
             {
                 window.Dispatcher.BeginInvoke(() => window.RestartSources());

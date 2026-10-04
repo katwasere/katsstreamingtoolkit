@@ -1,6 +1,8 @@
 # Roadmap
 
 Ordered by value-per-effort. Everything stays free/self-hosted.
+Idea write-ups and Kats ratings (10 = add to roadmap) live in
+[IDEAS](IDEAS.md); this file is the actionable queue.
 
 ## Shipped
 
@@ -21,27 +23,167 @@ Ordered by value-per-effort. Everything stays free/self-hosted.
 - **Live editing preview** - the Output Studio's server preview now streams the destination's
   exact composed output continuously (~10 fps, 432x768 / 768x432 MJPEG, ~1-2 Mbit/s over the
   existing SSH channel) instead of polling 2 fps snapshots, so while you edit you see exactly
-  what the platform receives, live. The snapshot diagnostics remain as the fallback until the
-  first frame lands, and stale frames are labelled with their age.
+  what the platform receives, live. The snapshot diagnostics remain as the
+  fallback until the first frame lands, and stale frames are labelled with their age.
+- **Streaming deploy log** - the Deploy tab shows server output the moment it arrives
+  (docker compose build steps, hardening script, errors) instead of freezing until
+  each step finishes; the long build is no longer a silent wait.
+- **Per-destination live checks** - every destination card now shows a second light
+  for the platform side: "live on platform" / "not live yet", polled every 30s from
+  Kick's public channel API, Twitch's anonymous GraphQL, YouTube live-video
+  resolution and TikTok's live page. Handled per destination (new Handle column) with
+  fallback to the "My channels" entries; failures degrade to "unknown", never red
+  noise. The relay only sees its own pushes - this light is what catches "the server
+  sends but the platform shows nothing".
+- **Watchdog with alerting (toolkit-first)** - the 10s monitor tick became a full
+  health pass: one SSH command reads the relay's /stat, the container's ffmpeg
+  process list (each routed encoder is identified by its kat-preview-<id> snapshot
+  path), every preview snapshot's file age, and the relay error-log tail. The result
+  drives a red WATCHDOG banner with per-condition alarms, each stating the reason
+  from the relay log (keys redacted before display): relay stopped responding
+  (debounced two ticks so one SSH hiccup stays silent), OBS feed dropped mid-stream
+  (transition-detected), a routed destination's encoder down (missing process) or
+  frozen (process alive, snapshot stale > 60s), and repeated push failures per
+  landscape destination (log lines naming the ingest host). Frozen encoders are
+  auto-killed (default on, toggle in the banner) so nginx respawns a fresh one;
+  per-alarm "restart encoder" buttons and a "Restart relay" button sit right in the
+  banner, with an optional alarm sound. Per-destination push lights are now honest
+  (routed destinations report their own encoder state instead of copying the global
+  relay state). The "post a notice into the affected platform's chat" half waits for
+  the chat-send/OAuth subsystem from the moderation work.
+- **Go-live orchestration (one-button Start/End stream)** - a new obs-websocket 5.x
+  client (`Services/ObsWebSocketClient.cs`: challenge/salt auth, request/response
+  RPC, StreamStateChanged events, scene requests ready for later hooks) powers a
+  Start stream button that verifies the relay, tells OBS to start (when OBS control
+  is enabled), then polls nginx stats until the stream actually arrives - and an
+  End stream button that stops OBS and confirms the publisher dropped. OBS settings
+  live on the Relay tab (enabled toggle, ws url, password in secrets.json); the
+  connection shows its own status light. Without OBS control the buttons still
+  verify relay + arrival, so they work for everyone. Scene changes on chat events
+  remain in the queue under "OBS auto-switching"; second-PC OBS stays post-release.
 
-## Next
+## On hold - TikTok chat connector (Kats)
 
-- **TikTok chat connector** - TikTok requires signed websockets for chat reads
-  (Euler Stream or similar); video output to TikTok already works via the relay.
-- **Per-destination live checks** - query Kick/YouTube/etc. for "actually live on the
-  platform" (the relay can't see what happens after each push; needs platform APIs/scrapes).
-- **Streaming SSH output** - stream deploy logs live instead of per-step updates.
+The connector code is written and wired in (`Chat/TikTokChatClient.cs`: Euler Stream
+room-info pre-check + signed websocket, API key in secrets.json, TikTok chat mode and
+handle fields in the overlay UI) - but it has never run against real Euler responses,
+and Kats is sorting out the Euler Stream key/setup side first, so it is parked until
+then. When picking it back up: if the overlay status sticks on "reconnecting" or
+"waiting for the live", the exact response shapes (`roomInfo.status`, the
+`websocketUrl` sign reply, the chat frames' `event`/`data`/`comment` fields) need
+adjusting in `TikTokChatClient` - all parsing there is defensive and fails toward
+clear status text. TikTok *video* works today and needs none of this.
 
-## Later
+## Next - phase two (rated 10/10 in IDEAS - current queue)
+
+Standing decisions for everything in this phase (from Kats):
+
+- **Platform-agnostic first** - Twitch, Kick, YouTube and TikTok are all
+  primary, built behind one connector layer (per-platform adapters implementing
+  a shared interface) so additional platforms slot in later without rework.
+- **OAuth logins are accepted** - a browser popup granting the toolkit
+  permissions; tokens live in secrets.json. Stream keys alone stay for the
+  relay path.
+
+### Chat & overlays
+
+- **Moderation + command runner** - timeout/ban/delete buttons on overlay chat lines
+  (mod-authed Twitch/Kick/YouTube calls), shared filter lists, slow-mode toggles, and
+  `!commands` handled by the toolkit: reply in chat, trigger overlay effects, flip OBS
+  scenes. (Kats: planned now that phase one is done.)
+- **Alert overlays** - follows / subs / raids / likes rendered as animated overlay
+  elements next to the chat lines (Twitch EventSub + Kick + YouTube equivalents; the
+  overlay window already exists).
+- **Polls / predictions widget** - poll state fetched from the platform APIs and
+  rendered as an overlay element.
+
+### Relay / output engine
+
+- **Per-destination quality ladder** - more than one variant per platform (e.g. 1080p60
+  main + 720p fallback), selected by name suffix.
+- **Audio processing per destination** - loudness normalization (-16 LUFS for platforms),
+  per-destination volume trim, and music ducking on the portrait renditions (the old
+  "Later" item, folded in here).
+- **SRT ingest option** - SRT listener beside RTMP 1935 (loss-resilient, better for
+  flaky uplinks); OBS supports it natively.
+- **HLS self-view endpoint** - the relay serves your own composed output as HLS on a
+  loopback-only port; check it on your phone over the SSH tunnel without burning a
+  test stream.
+- **Relay metrics history** - poll nginx stats once a minute into a small on-server
+  store; per-destination bitrate/viewer graphs for the session. The bandwidth watchdog
+  (warn when configured outputs exceed the VPS traffic allowance) rides on this.
+
+### Platform integrations
+
+- **Title/category sync** - set stream title + game/category once in the toolkit,
+  pushed to every platform that supports it (Twitch/Kick/YouTube APIs).
+- **Key rotation reminders** - destinations record when their stream key was last
+  rotated; the toolkit nags on a configurable interval (keys leak via screenshots).
+- **OBS auto-switching via the shipped obs-websocket link** - the transport is live
+  (see go-live orchestration in Shipped); remaining work: scene changes on chat
+  events (raids, follows) and automatic portrait-scene handling, hooking the
+  moderation/alerts work.
+- **Per-platform status board** - the phase-one live checks extended into a grid:
+  relay-side health + platform-side "actually live" + viewer counts where an API
+  provides them, per destination, in one board.
+
+### Ops & security
+
+- **Server doctor** - one panel that checks everything a fresh VPS needs: Docker, disk
+  space, kernel MTU state, firewall/security-list reachability of 1935 (and any viewer
+  ports), certificate/keys - and prints the fix command for each failure. Turns the
+  current scatter of diagnostics into a checklist.
+- **Firewall automation + provider detection** - users bring any VPS, so the toolkit
+  first detects what the server runs on, then recommends the right path: a guided
+  checklist (exact console steps, no cloud credentials stored) where rules can't be
+  edited over SSH (Oracle security lists), or automatic setup (UFW rules over SSH,
+  provider CLI integration where an API key is provided). Both paths end at "1935 (and
+  any viewer ports) reachable".
+- **Config backups** - scheduled encrypted backup of config + secrets to a folder of
+  choice (or S3-compatible store) with one-click restore.
+- **Server resource view** - CPU/RAM/network/disk read through the existing persistent
+  SSH session, shown next to the relay status (already polled anyway - just visualize it).
+
+## Later (rated 8-9/10 - after the 10/10 wave)
 
 - **BTTV / 7TV / FFZ emotes** in overlays (currently emotes render as text).
 - **Output Studio test buttons** - validate configs locally, dry-run each destination's
   ffmpeg command on the server against a test source, and an opt-in short test push.
-- **Local relay mode** - same nginx/ffmpeg stack via Docker Desktop or WSL2 for
-  people with strong upload; no VPS needed.
-- **OBS auto-switching** - obs-websocket integration: scene changes on chat
-  events (raids, follows), automatic portrait-scene handling for vertical renditions.
-- **Audio ducking** on the portrait renditions (music-only segments for Shorts).
-- **Overlay themes** - bubble style, per-platform filters, keyword highlights.
-- **Bandwidth watchdog** - warn when the configured destinations exceed the VPS
-  traffic allowance.
+- **Output Studio polish** - direct manipulation (drag/resize layers in the live preview
+  instead of sliders), all-outputs grid, layer animations + scheduled layer changes,
+  scene presets per destination.
+- **OBS & local tooling** - OBS profile generator (importable server/key/output
+  settings), layout profiles, profile import/export (encrypted zip), tray integration,
+  auto-update channel, portable single-file build.
+- **Chat extras** - TTS of chat messages (per-platform flags, rate limiter); overlay
+  themes + keyword highlights (bubble style, per-platform filters).
+- **External watchdog notifications** - beyond the shipped toolkit watchdog's banner
+  and auto-restart: Discord webhook, Telegram bot, ntfy push, and posting a notice
+  into the affected destination's platform chat (needs the chat-send/OAuth subsystem).
+- **Local relay mode** - same nginx/ffmpeg stack via Docker Desktop or WSL2 for people
+  with strong upload; deploy becomes "choose target: VPS or this PC".
+
+## Post-release (explicitly deferred)
+
+- **Fallback server / multi-server failover** - development targets a single VPS; a
+  fallback-server option (one-click switch when the primary dies or runs out of
+  bandwidth) is built after release.
+- **Second-PC OBS support** - go-live orchestration and auto-switching ship same-PC
+  (obs-websocket on localhost); reaching OBS on a network machine comes later.
+
+## Parked (rated below the later wave)
+
+- **Chat recording** (6/10 - worried about file sizes) - raw per-platform JSONL chat
+  logs per session for analysis, highlight mining and overlay replay.
+- **Instant replay / rewind buffer** (5/10) - server-side ring buffer of the last N
+  minutes; the local OBS replay buffer already covers most of this.
+
+## Not planned
+
+- **Clip factory / server-side recording** - rated 1/10 and 0/10: the stream is already
+  recorded locally, so server-side clips, recordings and auto-clipping add nothing.
+- Multi-tenant / hosted service - this stays a self-hosted single-user tool.
+- Viewer-facing web features (chat page, embedded player) - the relay is private
+  infrastructure, not a viewing platform.
+- Anything requiring paid third-party services as a hard dependency (Euler Stream is
+  accepted for the TikTok chat connector only).

@@ -26,9 +26,60 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="8">
 
+                        <TextBlock Text="Go live" FontSize="18" FontWeight="Bold" Margin="0,4,0,8" />
+                        <Border Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Start stream" Command="{Binding GoLiveCommand}" Padding="16,5" FontWeight="SemiBold" />
+                                    <Button Content="End stream" Command="{Binding EndStreamCommand}" Margin="8,0,0,0" Padding="16,5" />
+                                    <TextBlock Text="{Binding GoLiveStatusText, Mode=OneWay}" Margin="14,0,0,0" VerticalAlignment="Center"
+                                               FontWeight="SemiBold" Foreground="#FF8FD694" />
+                                    <TextBlock Text="{Binding IsRunning, StringFormat=busy: {0}}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                               Foreground="#FF9AA0A8" Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <CheckBox Content="Control OBS (obs-websocket)" IsChecked="{Binding Config.ObsEnabled}" VerticalAlignment="Center" />
+                                    <TextBlock Text="  ws url:" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                    <TextBox Width="180" Text="{Binding Config.ObsWebSocketUrl}" VerticalAlignment="Center" />
+                                    <TextBlock Text="  password:" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                    <local:SecretBox Width="150" SecretText="{Binding ObsPassword}" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding ObsConnectionText, Mode=OneWay}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                               FontSize="11" Foreground="#FF9AA0A8" />
+                                </StackPanel>
+                                <TextBlock Text="Start stream: verifies the relay, tells OBS to start (if control is on), then confirms your stream actually arrives. Same PC first: enable the obs-websocket plugin in OBS (Tools -> WebSocket Server Settings), set the same password here."
+                                           FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,6,0,0" />
+                            </StackPanel>
+                        </Border>
+
                         <TextBlock Text="How your stream travels" FontSize="18" FontWeight="Bold" Margin="0,4,0,8" />
                         <Border Background="#FF23272E" CornerRadius="8" Padding="16,12" Margin="0,0,0,12">
-                            <StackPanel Orientation="Horizontal">
+                            <StackPanel>
+                                <Border Background="#FF5A2222" CornerRadius="6" Padding="10,8" Margin="0,0,0,10"
+                                        Visibility="{Binding HasAlarms, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+                                        <TextBlock Text="WATCHDOG" FontWeight="Bold" FontSize="12" Foreground="#FFFFB4B4" Margin="0,0,0,4" />
+                                        <ItemsControl ItemsSource="{Binding Alarms}" Margin="0,0,0,8">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <DockPanel Margin="0,1" LastChildFill="True">
+                                                        <Button DockPanel.Dock="Right" Content="restart encoder" Padding="6,1" Margin="10,0,0,0"
+                                                                VerticalAlignment="Top"
+                                                                Command="{Binding DataContext.RestartEncoderCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"
+                                                                Visibility="{Binding CanRestart, Converter={StaticResource BoolToVis}}" />
+                                                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="#FFFFE3E3" />
+                                                    </DockPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button Content="Restart relay" Command="{Binding RestartRelayCommand}" Padding="10,3" />
+                                            <CheckBox Content="auto-restart frozen encoders" IsChecked="{Binding Config.WatchdogAutoRestart}" Margin="14,0,0,0" VerticalAlignment="Center" />
+                                            <CheckBox Content="alarm sound" IsChecked="{Binding Config.AlarmSound}" Margin="14,0,0,0" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <StackPanel Orientation="Horizontal">
                                 <Border Background="#FF2D5B8A" CornerRadius="6" Padding="14,8">
                                     <StackPanel>
                                         <TextBlock Foreground="White" FontWeight="SemiBold"><Run Text="OBS" /><LineBreak /><Run Text="(your PC)" FontSize="10" /></TextBlock>
@@ -79,11 +130,16 @@
                                                         <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{Binding PushLight, Converter={StaticResource LightBrush}}" />
                                                         <TextBlock Text="{Binding PushLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
                                                     </StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                                        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{Binding LiveLight, Converter={StaticResource LightBrush}}" />
+                                                        <TextBlock Text="{Binding LiveLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                                    </StackPanel>
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -142,6 +198,8 @@
                                 <DataGridComboBoxColumn Header="Portrait style" SelectedItemBinding="{Binding PortraitStyle}" Width="140"
                                                         ItemsSource="{x:Static vm:MainViewModel.AllPortraitStyles}" />
                                 <DataGridTextColumn Header="Ingest URL (from platform dashboard)" Binding="{Binding IngestUrl}" Width="*" />
+                                <DataGridTextColumn Header="Handle (live checks)" Binding="{Binding ChannelHandle}" Width="110" />
+                                <DataGridTextColumn Header="Live" Binding="{Binding LiveLightText, Mode=OneWay}" Width="110" IsReadOnly="True" />
                                 <DataGridTemplateColumn Header="Stream key" Width="150">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
@@ -180,7 +238,12 @@
                         <TextBlock Text="Kick channel" FontSize="11" Foreground="#FF9AA0A8" />
                         <TextBox Text="{Binding Config.MyChannels.KickChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
                         <TextBlock Text="YouTube (video URL or @handle)" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.MyChannels.YouTubeUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,10" />
+                        <TextBox Text="{Binding Config.MyChannels.YouTubeUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                        <TextBlock Text="TikTok @handle" FontSize="11" Foreground="#FF9AA0A8" />
+                        <TextBox Text="{Binding Config.MyChannels.TikTokHandle, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                        <TextBlock Text="TikTok chat API key (Euler Stream)" FontSize="11" Foreground="#FF9AA0A8" />
+                        <local:SecretBox SecretText="{Binding EulerApiKey}" Margin="0,2,0,2" />
+                        <TextBlock Text="Free key: eulerstream.com - API keys. Only needed for TikTok chat; TikTok video goes through the relay without it." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,10" />
                         <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,10" />
 
                         <StackPanel Orientation="Horizontal">
@@ -220,6 +283,10 @@
                             <StackPanel Orientation="Horizontal" Margin="0,2">
                                 <TextBlock Text="YouTube URL / @handle:" Width="170" VerticalAlignment="Center" />
                                 <TextBox Width="200" Text="{Binding YouTubeUrl}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <TextBlock Text="TikTok @handle:" Width="170" VerticalAlignment="Center" />
+                                <TextBox Width="200" Text="{Binding TikTokHandle}" />
                             </StackPanel>
 
                             <Separator Margin="0,12" />
@@ -351,7 +418,7 @@
 
                         <TextBlock Text="Chat overlays" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
-                                   Text="Overlays are transparent windows that float over your game. Unlock them (Ctrl+Alt+C) to drag and resize; lock them so clicks pass through to the game. Each overlay can merge every platform or show just one - add as many as you like. Twitch needs no login (anonymous read), Kick uses its public websocket, YouTube uses its public live-chat endpoint. TikTok chat is on the roadmap; its video output works today." />
+                                   Text="Overlays are transparent windows that float over your game. Unlock them (Ctrl+Alt+C) to drag and resize; lock them so clicks pass through to the game. Each overlay can merge every platform or show just one - add as many as you like. Twitch needs no login (anonymous read), Kick uses its public websocket, YouTube uses its public live-chat endpoint, and TikTok reads through an Euler Stream signed websocket (free API key - get one at eulerstream.com and paste it above)." />
 
                         <TextBlock Text="Keys &amp; privacy" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
@@ -361,9 +428,9 @@
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
                                    Text="The only cost is the VPS: roughly 4-6 EUR/month for typical multi-streaming (Hetzner CX22 includes 20 TB of traffic; Oracle Cloud has a free tier big enough). The status bar at the bottom of the Relay tab estimates your server's traffic so you can stay inside the allowance." />
 
-                        <TextBlock Text="Roadmap" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="Live lights &amp; what's next" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
-                                   Text="TikTok chat connector, BTTV/7TV emotes in overlays, one-click deploy to your VPS from the app (SSH), live status indicators for each destination, OBS scene auto-switching via obs-websocket, and a local relay mode (no VPS) for strong connections. See docs/ROADMAP.md." />
+                                   Text="Each destination card shows two lights: the relay-side push light (is the server actually sending?) and the platform-side live light (does the platform show the stream?). Live checks poll the platforms every 30 seconds using each destination's Handle column, falling back to your 'My channels' entries - a green push light next to a dark live light means the server is sending but the platform is not showing it. The watchdog watches the same picture every 10 seconds: if the relay dies, your OBS feed drops mid-stream, an output's encoder dies or freezes, or a push starts failing, a red WATCHDOG banner appears with the reason from the relay log; frozen encoders are killed automatically so nginx respawns them, and a Restart relay button is right there. Go live from the Relay tab: Start stream verifies the relay, starts OBS when 'Control OBS' is on (enable the obs-websocket plugin in OBS: Tools -> WebSocket Server Settings, same password as here), and confirms your stream actually arrives; End stream does the reverse. Up next on the roadmap: moderation + command runner, alert overlays, title/category sync, and OBS scene auto-switching. See docs/ROADMAP.md." />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

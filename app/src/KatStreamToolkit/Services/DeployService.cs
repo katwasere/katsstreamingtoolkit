@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using KatStreamToolkit.Models;
 using Renci.SshNet;
 
@@ -16,6 +17,19 @@ public sealed record ServerBundleInfo(
     public bool RunningConfigMatches =>
         RunningConfigHash != null &&
         RunningConfigHash.StartsWith(ExpectedConfigHash, StringComparison.OrdinalIgnoreCase);
+}
+
+// What the watchdog sees on one pass: relay reachability, OBS publisher state,
+// which routed destinations' encoders are running, how stale each encoder's
+// preview snapshot is, and the relay's recent error log.
+public sealed record RelayHealthSnapshot(
+    bool Reachable,
+    bool Receiving,
+    HashSet<Guid> Encoders,
+    Dictionary<Guid, int> SnapshotAges,
+    string LogTail)
+{
+    public static readonly RelayHealthSnapshot Down = new(false, false, new HashSet<Guid>(), new Dictionary<Guid, int>(), "");
 }
 
 // SSH/SFTP operations for the Deploy tab. Everything runs on a background thread;
@@ -83,6 +97,99 @@ public static class DeployService
         cmd.Execute();
         var text = (cmd.Result + " " + cmd.Error).Trim();
         return (cmd.ExitStatus ?? -1, text);
+    }
+
+    // Runs a command and forwards its output to `log` AS IT ARRIVES instead of
+    // buffering until the command finishes - `docker compose up -d --build`
+    // can run for minutes and the old per-step log left the Deploy tab frozen
+    // the whole time. Returns the exit status (-1 on timeout/connection drop,
+    // same contract as Run).
+    private static int RunStreaming(SshClient client, string command, Action<string> log, int timeoutSeconds = 300)
+    {
+        var cmd = client.CreateCommand(command);
+        cmd.CommandTimeout = TimeSpan.FromSeconds(timeoutSeconds);
+        var asyncResult = cmd.BeginExecute();
+        using var stdout = cmd.OutputStream;
+        using var stderr = cmd.ExtendedOutputStream;
+
+        // Drain stderr concurrently: the remote side blocks once a full channel
+        // window is unread, so an ignored chatty stderr could stall stdout too
+        // (every streamed command appends 2>&1, so this is belt-and-braces).
+        var stderrTask = Task.Run(() =>
+        {
+            var buffer = new byte[8192];
+            var all = new MemoryStream();
+            try
+            {
+                int read;
+                while ((read = stderr.Read(buffer, 0, buffer.Length)) > 0)
+                    all.Write(buffer, 0, read);
+            }
+            catch
+            {
+                // Channel torn down (timeout/abort) - keep what we got.
+            }
+            return Encoding.UTF8.GetString(all.ToArray());
+        });
+
+        try
+        {
+            var buffer = new byte[16 * 1024];
+            var chars = new char[16 * 1024];
+            var decoder = Encoding.UTF8.GetDecoder();
+            var pending = new StringBuilder();
+            int read;
+            while ((read = stdout.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                int count = decoder.GetChars(buffer, 0, read, chars, 0);
+                pending.Append(chars, 0, count);
+                FlushLines(pending, log, final: false);
+            }
+            FlushLines(pending, log, final: true);
+            cmd.EndExecute(asyncResult);
+
+            string err = stderrTask.GetAwaiter().GetResult();
+            foreach (var line in err.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                log(line);
+            return cmd.ExitStatus ?? -1;
+        }
+        catch
+        {
+            // CommandTimeout closes the channel: reads end, EndExecute throws.
+            return -1;
+        }
+        finally
+        {
+            try { cmd.Dispose(); } catch { }
+        }
+    }
+
+    // Emits complete lines from `pending` (split on \n and \r - docker's
+    // progress bars overwrite with \r), leaving a trailing partial line
+    // buffered until more output arrives.
+    private static void FlushLines(StringBuilder pending, Action<string> log, bool final)
+    {
+        string text = pending.ToString();
+        pending.Clear();
+        int start = 0;
+        while (start < text.Length)
+        {
+            int nl = text.IndexOfAny(new[] { '\r', '\n' }, start);
+            if (nl < 0) break;
+            EmitLine(text[start..nl]);
+            start = nl + 1;
+        }
+        string rest = text[start..];
+        if (final)
+            EmitLine(rest);
+        else if (rest.Length > 0)
+            pending.Append(rest);
+
+        void EmitLine(string raw)
+        {
+            var line = raw.Trim();
+            if (line.Length > 0) log(line);
+        }
     }
 
     public static void TestConnection(DeployTarget t, Action<string> log, AppConfig? cfg = null)
@@ -186,9 +293,7 @@ public static class DeployService
             log("applying network hardening (MTU/MSS clamp)...");
             if (passwordlessSudo)
             {
-                var (hardenCode, hardenOut) = Run(client, $"cd '{t.RemotePath}' && sudo -n sh server-hardening.sh 2>&1");
-                foreach (var line in hardenOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    log("  " + line);
+                int hardenCode = RunStreaming(client, $"cd '{t.RemotePath}' && sudo -n sh server-hardening.sh 2>&1", l => log("  " + l));
                 if (hardenCode != 0)
                     log("  note: hardening failed - if OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
             }
@@ -197,9 +302,7 @@ public static class DeployService
                 log("  skipped (no passwordless sudo) - if OBS connects then drops after a few seconds, ssh in and run: sudo sh " + t.RemotePath + "/server-hardening.sh");
             }
 
-            var (code, output) = Run(client, $"cd '{t.RemotePath}' && {sudo} docker compose up -d --build 2>&1", 600);
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                log("  " + line);
+            int code = RunStreaming(client, $"cd '{t.RemotePath}' && {sudo} docker compose up -d --build 2>&1", l => log("  " + l), 600);
             if (code != 0)
             {
                 string hint = passwordlessSudo
@@ -258,7 +361,7 @@ public static class DeployService
             + " - fix the URL (some platform defaults are outdated) or disable the destination, otherwise nginx cannot start");
     }
 
-    private static string? IngestHost(string ingestUrl)
+    public static string? IngestHost(string ingestUrl)
     {
         var url = ingestUrl.Trim();
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
@@ -330,5 +433,173 @@ public static class DeployService
         if (string.IsNullOrWhiteSpace(output) || !output.Contains("<rtmp"))
             return (false, false);
         return (true, output.Contains("<publishing"));
+    }
+
+    // ---------- watchdog health snapshot ----------
+    //
+    // One command per tick fetches everything the watchdog needs: the relay's
+    // /stat (reachable + OBS publishing), the container's ffmpeg command lines
+    // (which routed encoders are alive - each contains its kat-preview-<id>
+    // snapshot path), the age of every preview snapshot (a stale file means a
+    // frozen encoder), and the relay error log tail (the "why"). The process
+    // dump contains stream keys, so it never leaves this method - only boolean
+    // per-destination facts do.
+
+    public static RelayHealthSnapshot FetchHealthSnapshot(DeployTarget t, AppConfig cfg)
+    {
+        string output = RelayPreviewService.RunOnServer(t, BuildHealthCommand(), 30);
+        return ParseHealthSnapshot(output, cfg);
+    }
+
+    private static string BuildHealthCommand()
+    {
+        // The whole pass is one base64 script piped into sh, and each container
+        // script is itself base64 piped into `docker exec -i kat-relay sh`.
+        // Reason: the first version nested the container scripts inside double
+        // quotes of a host `sh -c`, and the host shell expanded every $() and
+        // $var meant for the CONTAINER - the encoder list came back empty and
+        // every routed destination falsely flagged "ENCODER IS DOWN". Base64
+        // over stdin carries the scripts with zero quoting layers.
+        const string procs =
+            "for p in /proc/[0-9]*/cmdline; do c=$(tr '\\000' ' ' <\"$p\" 2>/dev/null); case \"$c\" in *ffmpeg*) echo \"$c\";; esac; done";
+        const string ages =
+            "now=$(date +%s); for f in /tmp/kat-preview-*.jpg; do [ -f \"$f\" ] || continue; m=$(stat -c %Y \"$f\" 2>/dev/null) || continue; echo \"$(basename \"$f\") $((now-m))\"; done";
+        const string logTail = "tail -n 60 /var/log/nginx/error.log";
+
+        static string B64(string s) => Convert.ToBase64String(Encoding.UTF8.GetBytes(s));
+
+        string procsB64 = B64(procs);
+        string agesB64 = B64(ages);
+        string logB64 = B64(logTail);
+
+        // `A | docker exec ... || A | sudo -n docker exec ...` - pipe binds
+        // tighter than ||, so the sudo variant only runs when the plain docker
+        // call failed (no docker group). -i feeds the script on stdin.
+        string hostScript =
+            "S=$(curl -s --max-time 3 http://127.0.0.1:8080/stat 2>/dev/null || wget -qO- -T 3 http://127.0.0.1:8080/stat 2>/dev/null)\n" +
+            "echo STAT\n" +
+            "printf '%s' \"$S\" | base64\n" +
+            "echo\n" +
+            "echo PROCS\n" +
+            $"echo {procsB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {procsB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n" +
+            "echo AGES\n" +
+            $"echo {agesB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {agesB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n" +
+            "echo LOG\n" +
+            $"echo {logB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {logB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n";
+
+        return "echo " + B64(hostScript) + " | base64 -d | sh";
+    }
+
+    private static RelayHealthSnapshot ParseHealthSnapshot(string output, AppConfig cfg)
+    {
+        string statB64 = "";
+        var procs = new List<string>();
+        var ageLines = new List<string>();
+        var logLines = new List<string>();
+
+        string section = "";
+        foreach (var rawLine in output.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string trimmed = line.Trim();
+            if (trimmed is "STAT" or "PROCS" or "AGES" or "LOG")
+            {
+                section = trimmed;
+                continue;
+            }
+            switch (section)
+            {
+                case "STAT": statB64 += trimmed; break;
+                case "PROCS": if (trimmed.Length > 0) procs.Add(trimmed); break;
+                case "AGES": if (trimmed.Length > 0) ageLines.Add(trimmed); break;
+                case "LOG": if (trimmed.Length > 0) logLines.Add(trimmed); break;
+            }
+        }
+
+        string xml;
+        try
+        {
+            xml = Encoding.UTF8.GetString(Convert.FromBase64String(statB64.Trim()));
+        }
+        catch
+        {
+            // No stat (relay down / base64 unavailable).
+            return RelayHealthSnapshot.Down;
+        }
+        if (!xml.Contains("<rtmp"))
+            return RelayHealthSnapshot.Down;
+
+        var routed = cfg.Destinations
+            .Where(d => d.Enabled &&
+                        (d.Orientation == Orientation.Portrait || d.PortraitStyle == PortraitStyle.Custom) &&
+                        !string.IsNullOrWhiteSpace(d.IngestUrl))
+            .ToList();
+
+        var encoders = new HashSet<Guid>();
+        var ages = new Dictionary<Guid, int>();
+        foreach (var d in routed)
+        {
+            string token = d.Id.ToString("N");
+            if (procs.Any(p => p.Contains("kat-preview-" + token, StringComparison.Ordinal)))
+                encoders.Add(d.Id);
+            foreach (var ageLine in ageLines)
+            {
+                // "<file> <age-seconds>"
+                int sp = ageLine.IndexOf(' ');
+                if (sp <= 0) continue;
+                if (!ageLine[..sp].Contains(token, StringComparison.Ordinal)) continue;
+                if (int.TryParse(ageLine[(sp + 1)..].Trim(), out int age) && age >= 0)
+                    ages[d.Id] = age;
+                break;
+            }
+        }
+
+        return new RelayHealthSnapshot(true, xml.Contains("<publishing"), encoders, ages,
+            string.Join('\n', logLines));
+    }
+
+    // Lines from the relay log that indicate a real failure (used for the
+    // watchdog's "why" and for landscape-push detection).
+    public static bool IsErrorLine(string line) =>
+        line.Contains("error", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("failed", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("invalid", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("matches no streams", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("no such file", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("connection refused", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("connection reset", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("connection timed out", StringComparison.OrdinalIgnoreCase)
+        || line.Contains("handshake", StringComparison.OrdinalIgnoreCase);
+
+    // The most relevant recent relay-log line for a destination: one that
+    // mentions its ingest host if there is any, otherwise the newest error line.
+    public static string? FindLogReason(string logTail, AppConfig cfg, DestinationConfig dest)
+    {
+        var lines = logTail.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string? host = IngestHost(dest.IngestUrl);
+        string? hostMatch = null;
+        if (host != null)
+            hostMatch = lines.LastOrDefault(l => l.Contains(host, StringComparison.OrdinalIgnoreCase) && IsErrorLine(l));
+        string? line = hostMatch ?? lines.LastOrDefault(IsErrorLine);
+        if (line == null) return null;
+        return RedactSecrets(line, cfg);
+    }
+
+    public static bool LogHasHostError(string logTail, string host) =>
+        logTail.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(l => l.Contains(host, StringComparison.OrdinalIgnoreCase) && IsErrorLine(l));
+
+    // Relay log lines can echo push URLs (which contain stream keys) - mask
+    // every configured key before the text reaches the deploy log, which may be
+    // visible on stream.
+    public static string RedactSecrets(string text, AppConfig cfg)
+    {
+        foreach (var d in cfg.Destinations)
+        {
+            if (!string.IsNullOrWhiteSpace(d.StreamKey))
+                text = text.Replace(d.StreamKey, "\u2022\u2022\u2022\u2022", StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
     }
 }

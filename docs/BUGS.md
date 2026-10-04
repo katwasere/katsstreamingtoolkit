@@ -419,6 +419,31 @@ Four stacked causes:
   - Other dead user-entered hosts still fail the deploy with the explicit
     SR-3 message (that behavior is correct - nginx would restart-loop).
 
+### BUG-31. Moving the keys file wipes the SSH password out of it - [FIXED]
+- `MainViewModel.MoveKeysFile` did `SaveFromConfig(newPath, cfg, _secrets)` and then
+  `_secrets = SecretsStore.Capture(cfg)`. `Capture` builds from config alone and has
+  no SshPassword, so `_secrets.SshPassword` became empty - the UI field cleared and
+  the next `Save()` (debounced, seconds later) rewrote the new keys file with an
+  empty SSH password. Found while adding the Euler Stream API key (EulerApiKey),
+  which follows the same preserve-via-`previous` pattern as SshPassword.
+- **File**: `MainViewModel.MoveKeysFile`.
+- **Fix**: reload the file just written (`SecretsStore.Load(dialog.FileName)`)
+  instead of `Capture`, and re-raise SshPassword/EulerApiKey so the UI follows.
+
+### BUG-32. Watchdog flagged every routed encoder as "down" (shell quoting) - [FIXED]
+- Found live during the first watchdog test: a Twitch destination streaming
+  correctly showed "unreachable" with an "ENCODER IS DOWN" alarm. The health
+  command nested the container scripts inside a host `sh -c "..."` double-quoted
+  string, and the host shell expanded every `$(...)` and `$var` meant for the
+  CONTAINER before docker exec ever ran (`$p` unset, tr read empty stdin) - the
+  encoder process list and snapshot ages always came back empty, so all routed
+  destinations (landscape-Custom counts as routed) looked dead. The relay-log
+  section had no `$` in it, which made the quoted "reasons" look plausible.
+- **File**: `DeployService.BuildHealthCommand`.
+- **Fix**: the whole pass is one base64 script piped into `sh`, and each
+  container script is base64 piped into `docker exec -i kat-relay sh` - the same
+  zero-quoting pattern the preview/test-encoder code already used.
+
 ## Second-pass summary
 
 | # | Area | Severity | Status |
@@ -435,6 +460,8 @@ Four stacked causes:
 | BUG-28 | Misc small items | Low | FIXED |
 | BUG-29 | Deployed relay version unverifiable | Medium | FIXED |
 | BUG-30 | Stale shipped TikTok default blocks deploys | High | FIXED |
+| BUG-31 | Keys-file move wiped the SSH password | Medium | FIXED |
+| BUG-32 | Watchdog false "encoder down" via shell quoting | High | FIXED |
 
 All findings from both passes are now fixed; the only [OPEN]-worthy leftover
 is the BUG-18 bandwidth-math claim, which turned out to be correct as written

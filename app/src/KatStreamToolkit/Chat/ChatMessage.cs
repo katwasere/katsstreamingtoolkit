@@ -16,6 +16,7 @@ public sealed class ChatMessage
         "Twitch" => "T",
         "Kick" => "K",
         "YouTube" => "YT",
+        "TikTok" => "TT",
         _ => "?",
     };
 }

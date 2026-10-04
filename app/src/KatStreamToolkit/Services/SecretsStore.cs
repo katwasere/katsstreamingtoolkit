@@ -12,6 +12,12 @@ public class SecretsData
     public string UpstreamStreamName { get; set; } = "";
     public string ServerHost { get; set; } = "";
     public string SshPassword { get; set; } = "";
+
+    // Euler Stream API key for the TikTok chat connector (free tier).
+    public string EulerApiKey { get; set; } = "";
+
+    // obs-websocket password for go-live orchestration.
+    public string ObsPassword { get; set; } = "";
 }
 
 public static class SecretsStore
@@ -74,7 +80,11 @@ public static class SecretsStore
     {
         var data = Capture(cfg);
         if (previous != null)
+        {
             data.SshPassword = previous.SshPassword;
+            data.EulerApiKey = previous.EulerApiKey;
+            data.ObsPassword = previous.ObsPassword;
+        }
         Save(path, data);
     }
 
