@@ -270,6 +270,41 @@ public partial class OverlayWindow : Window
             Dispatcher.BeginInvoke(DispatcherPriority.Background, () => Scroller.ScrollToEnd());
     }
 
+    // Fake chat lines injected straight into the list - verifies placement,
+    // size, wrapping and colors without waiting for (or needing) real chat.
+    public void InjectTestMessages()
+    {
+        var platforms = _statuses.Count > 0
+            ? _statuses.Keys.ToList()
+            : new List<string> { "Twitch", "Kick", "YouTube", "TikTok" };
+        string first = platforms[0];
+
+        var tests = new List<ChatMessage>();
+        for (int i = 0; i < platforms.Count; i++)
+            tests.Add(new ChatMessage
+            {
+                Platform = platforms[i],
+                Author = $"testviewer{i + 1}",
+                Text = $"test message from {platforms[i]} - if you can read this, the overlay renders",
+            });
+        tests.Add(new ChatMessage
+        {
+            Platform = first,
+            Author = "longtext",
+            Text = "a much longer line to check wrapping: the quick brown fox jumps over the lazy dog " +
+                   "again and again until it wraps onto a second line",
+        });
+        tests.Add(new ChatMessage
+        {
+            Platform = first,
+            Author = "chatter",
+            Text = "waves at the camera",
+            IsAction = true,
+        });
+        foreach (var msg in tests)
+            AppendMessage(msg);
+    }
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hwnd, int index);
 

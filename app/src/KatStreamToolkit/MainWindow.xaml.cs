@@ -30,6 +30,11 @@ public partial class MainWindow : Window
 
         _vm.OverlayAdded += overlay => OpenOverlay(overlay);
         _vm.OverlayRemoved += overlay => CloseOverlay(overlay);
+        _vm.OverlayTestMessages += overlay =>
+        {
+            if (_overlayWindows.TryGetValue(overlay.Id, out var window))
+                window.InjectTestMessages();
+        };
 
         foreach (var overlay in _vm.Overlays)
             OpenOverlay(overlay);

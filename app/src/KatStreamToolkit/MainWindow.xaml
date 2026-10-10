@@ -271,7 +271,10 @@
                         <TextBlock Text="{Binding TwitchLoginStatus, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,0" />
                         <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
 
-                        <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,10" />
+                        <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,6" />
+                        <Button Content="Sync overlays from My channels" Command="{Binding SyncOverlaysFromMyChannelsCommand}"
+                                Padding="10,3" HorizontalAlignment="Left" />
+                        <TextBlock Text="Points every overlay at the channels above (for after rotating channels) and reconnects them." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
 
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
@@ -341,6 +344,13 @@
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
                                 <CheckBox IsChecked="{Binding IsVisible}" Content="Shown on screen" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
+                                <Button Content="Send test messages"
+                                        Command="{Binding DataContext.TestOverlayMessagesCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        Padding="10,3" />
+                                <TextBlock Text="  injects fake chat lines into this overlay - no network needed" FontSize="11"
+                                           Foreground="#FF9AA0A8" VerticalAlignment="Center" />
                             </StackPanel>
                             <TextBlock Text="Position/size: drag the overlay by its title bar while unlocked; resize from the edges. Ctrl+Alt+C locks/unlocks ALL overlays at once."
                                        FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,8,0,0" />

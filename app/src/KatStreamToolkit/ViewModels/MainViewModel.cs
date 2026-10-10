@@ -26,6 +26,7 @@ public class MainViewModel : ObservableBase
 
     public event Action<OverlayConfig>? OverlayAdded;
     public event Action<OverlayConfig>? OverlayRemoved;
+    public event Action<OverlayConfig>? OverlayTestMessages;
 
     public AppConfig Config { get; }
     public ObservableCollection<DestinationConfig> Destinations { get; } = new();
@@ -127,6 +128,8 @@ public class MainViewModel : ObservableBase
     public ICommand LogoutTwitchCommand { get; }
     public ICommand AddCommandCommand { get; }
     public ICommand RemoveCommandCommand { get; }
+    public ICommand TestOverlayMessagesCommand { get; }
+    public ICommand SyncOverlaysFromMyChannelsCommand { get; }
 
     private void SetTwitchLoginStatus(string text)
     {
@@ -264,6 +267,25 @@ public class MainViewModel : ObservableBase
             or nameof(OverlayConfig.KickChatroomId)
             or nameof(OverlayConfig.YouTubeUrl))
             _commandRunner?.SyncSources();
+    }
+
+    // One-click catch-up: point EVERY overlay at the current "My channels"
+    // values (used when overlays were left on a channel that has since been
+    // rotated). Manual Kick chatroom ids are per-channel, so they are cleared
+    // and re-resolved for the new channel.
+    private void SyncOverlaysFromMyChannels()
+    {
+        var mc = Config.MyChannels;
+        foreach (var o in Overlays)
+        {
+            o.TwitchChannel = mc.TwitchChannel;
+            o.KickChannel = mc.KickChannel;
+            o.YouTubeUrl = mc.YouTubeUrl;
+            o.TikTokHandle = mc.TikTokHandle;
+            if (!string.IsNullOrEmpty(o.KickChatroomId))
+                o.KickChatroomId = "";
+        }
+        SyncChannelSnapshot();
     }
 
     // Called when the main window closes: releases the command runner's chat
@@ -994,6 +1016,11 @@ public class MainViewModel : ObservableBase
         {
             if (SelectedCommand != null) Commands.Remove(SelectedCommand);
         }, _ => SelectedCommand != null);
+        TestOverlayMessagesCommand = new RelayCommand(_ =>
+        {
+            if (SelectedOverlay != null) OverlayTestMessages?.Invoke(SelectedOverlay);
+        }, _ => SelectedOverlay != null);
+        SyncOverlaysFromMyChannelsCommand = new RelayCommand(_ => SyncOverlaysFromMyChannels(), _ => Overlays.Count > 0);
         EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
