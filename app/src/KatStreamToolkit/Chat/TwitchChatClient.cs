@@ -24,6 +24,10 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private DateTime _lastSend = DateTime.MinValue;
 
+    // Last line (ANY line, incl. PONGs) received from the wire. The keepalive
+    // watchdog kills the socket when this goes stale - see KeepaliveLoop.
+    private DateTime _lastLineUtc = DateTime.UtcNow;
+
     public string PlatformName => "Twitch";
     public event Action<ChatMessage>? MessageReceived;
     public event Action<string>? StatusChanged;
@@ -66,37 +70,52 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
                     using var reader = new StreamReader(ssl, Encoding.UTF8);
                     writer = new StreamWriter(ssl, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\r\n" };
 
+                    // Same handshake order as the diagnostics capture (and the
+                    // Twitch docs): capabilities first, then auth/nick/join.
+                    await writer.WriteLineAsync("CAP REQ :twitch.tv/tags twitch.tv/commands");
                     if (_accessToken != null)
                         await writer.WriteLineAsync($"PASS oauth:{_accessToken}");
                     await writer.WriteLineAsync($"NICK {nick}");
-
-                    await writer.WriteLineAsync("CAP REQ :twitch.tv/tags");
                     await writer.WriteLineAsync($"JOIN #{_channel}");
 
-                    string? line;
-                    while ((line = await reader.ReadLineAsync(ct)) != null)
+                    _lastLineUtc = DateTime.UtcNow;
+                    using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    Task keepalive = KeepaliveLoop(tcp, pingCts.Token);
+                    try
                     {
-                        if (line.StartsWith("PING"))
+                        string? line;
+                        while ((line = await reader.ReadLineAsync(ct)) != null)
                         {
-                            await writer.WriteLineAsync("PONG :tmi.twitch.tv");
-                            continue;
+                            _lastLineUtc = DateTime.UtcNow;
+                            if (line.StartsWith("PING"))
+                            {
+                                await writer.WriteLineAsync("PONG :tmi.twitch.tv");
+                                continue;
+                            }
+                            // Only OUR join (or the 001 welcome) means connected - any
+                            // " JOIN " line fires whenever someone else joins the room.
+                            if (line.Contains(" 001 ") || line.StartsWith(':' + nick + '!'))
+                            {
+                                // Publish the writer only once the room state is live,
+                                // so sends never race the join.
+                                await _sendGate.WaitAsync(ct);
+                                try { _writer = writer; } finally { _sendGate.Release(); }
+                                StatusChanged?.Invoke(_accessToken != null ? "connected (logged in)" : "connected");
+                            }
+                            if (line.Contains("RECONNECT"))
+                                throw new IOException("server requested reconnect");
+                            if (line.Contains("Login authentication failed") ||
+                                line.Contains("Improperly formatted AUTH"))
+                                StatusChanged?.Invoke("twitch rejected the login - log in again on the Chat Overlays tab");
+                            ParseAndRaise(line);
                         }
-                        // Only OUR join (or the 001 welcome) means connected - any
-                        // " JOIN " line fires whenever someone else joins the room.
-                        if (line.Contains(" 001 ") || line.StartsWith(':' + nick + '!'))
-                        {
-                            // Publish the writer only once the room state is live,
-                            // so sends never race the join.
-                            await _sendGate.WaitAsync(ct);
-                            try { _writer = writer; } finally { _sendGate.Release(); }
-                            StatusChanged?.Invoke(_accessToken != null ? "connected (logged in)" : "connected");
-                        }
-                        if (line.Contains("RECONNECT"))
-                            throw new IOException("server requested reconnect");
-                        if (line.Contains("Login authentication failed") ||
-                            line.Contains("Improperly formatted AUTH"))
-                            StatusChanged?.Invoke("twitch rejected the login - log in again on the Chat Overlays tab");
-                        ParseAndRaise(line);
+                    }
+                    finally
+                    {
+                        // Stop the keepalive BEFORE the writer teardown below,
+                        // so it can never write to a stream being disposed.
+                        pingCts.Cancel();
+                        try { await keepalive; } catch { }
                     }
                 }
                 catch (OperationCanceledException)
@@ -130,6 +149,44 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
             // async void and crashed the process.
             try { cts.Dispose(); } catch { }
         }
+    }
+
+    // Runs alongside the read loop for the lifetime of one connection.
+    // NAT routers and firewalls silently drop idle sockets - which looks
+    // exactly like "connected" forever with zero messages arriving. A PING
+    // every 2 minutes keeps the mapping alive; if NOTHING comes back (not
+    // even a PONG) for 6 minutes, the socket is provably dead: kill it so
+    // the run loop reconnects instead of starving silently.
+    private async Task KeepaliveLoop(TcpClient tcp, CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(2));
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                try
+                {
+                    await _sendGate.WaitAsync(ct);
+                    try
+                    {
+                        var w = _writer;
+                        if (w != null)
+                            await w.WriteLineAsync("PING :tmi.twitch.tv");
+                    }
+                    finally { _sendGate.Release(); }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { }
+
+                if (DateTime.UtcNow - _lastLineUtc > TimeSpan.FromMinutes(6))
+                {
+                    try { tcp.Close(); } catch { }
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     // IRC words cannot contain CR/LF; flatten them so a config response can
