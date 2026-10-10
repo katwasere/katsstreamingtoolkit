@@ -18,6 +18,15 @@ public sealed class CommandRunner : IDisposable
     private readonly Dictionary<string, IChatSender> _senders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _lastRun = new(StringComparer.OrdinalIgnoreCase);
 
+    // Reply texts this runner sent, with timestamps: Twitch echoes our own
+    // messages back to us, so if a configured reply is itself a command
+    // (response starting with '!'), the echo must not re-trigger it.
+    private readonly Dictionary<string, DateTime> _recentReplies = new(StringComparer.OrdinalIgnoreCase);
+
+    // Set by the view model: a chat line to display on the overlays when a
+    // command with ShowOnOverlay fires.
+    public Action<ChatMessage>? OverlayLine { get; set; }
+
     // One-line activity feed for the Commands tab (marshaled to the UI thread
     // by the subscriber).
     public event Action<string>? Activity;
@@ -105,14 +114,25 @@ public sealed class CommandRunner : IDisposable
     {
         if (msg.Text.Length < 2 || msg.Text[0] != '!') return;
 
-        // Twitch echoes our own replies back to us - never let them re-trigger.
+        string word = msg.Text[1..].Split(' ', 2)[0].Trim().ToLowerInvariant();
+        if (word.Length == 0) return;
+
+        // The logged-in account is usually the broadcaster - whose typed
+        // commands MUST work - so do NOT blanket-ignore it. Only skip echoes
+        // of replies this runner itself just sent (loop protection for
+        // responses that start with '!').
         var auth = ChatAuthStore.Twitch;
         if (auth != null && msg.Platform == "Twitch" &&
             string.Equals(msg.Author, auth.Login, StringComparison.OrdinalIgnoreCase))
-            return;
-
-        string word = msg.Text[1..].Split(' ', 2)[0].Trim().ToLowerInvariant();
-        if (word.Length == 0) return;
+        {
+            lock (_gate)
+            {
+                PruneReplies();
+                if (_recentReplies.TryGetValue(msg.Text.Trim(), out var sent) &&
+                    DateTime.UtcNow - sent < TimeSpan.FromSeconds(15))
+                    return;
+            }
+        }
 
         CommandConfig? cmd;
         lock (_gate)
@@ -130,6 +150,15 @@ public sealed class CommandRunner : IDisposable
         Execute(cmd, msg);
     }
 
+    private void PruneReplies()
+    {
+        // caller holds _gate
+        var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(60);
+        var stale = _recentReplies.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList();
+        foreach (var key in stale)
+            _recentReplies.Remove(key);
+    }
+
     private async void Execute(CommandConfig cmd, ChatMessage msg)
     {
         string name = cmd.Name.Trim().TrimStart('!');
@@ -143,9 +172,15 @@ public sealed class CommandRunner : IDisposable
                 if (sender is { CanSend: true })
                 {
                     bool sent = await sender.TrySendAsync(response);
-                    Note(sent
-                        ? $"!{name}: replied in {msg.Platform} chat"
-                        : $"!{name}: could not send to {msg.Platform} (connection down?)");
+                    if (sent)
+                    {
+                        lock (_gate) { _recentReplies[response] = DateTime.UtcNow; }
+                        Note($"!{name}: replied in {msg.Platform} chat");
+                    }
+                    else
+                    {
+                        Note($"!{name}: could not send to {msg.Platform} (connection down?)");
+                    }
                 }
                 else
                 {
@@ -166,6 +201,14 @@ public sealed class CommandRunner : IDisposable
                 {
                     Note($"!{name}: scene switch failed ({ex.Message})");
                 }
+            }
+
+            // Optional overlay echo of the command, per-command toggle.
+            if (cmd.ShowOnOverlay)
+            {
+                string text = response.Length > 0 ? response : $"{msg.Author} used !{name}";
+                try { OverlayLine?.Invoke(new ChatMessage { Platform = msg.Platform, Author = "bot", Text = text }); }
+                catch { }
             }
         }
         catch (Exception ex)

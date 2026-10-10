@@ -229,20 +229,36 @@ public partial class OverlayWindow : Window
     private ContextMenu? BuildModMenu(ChatMessage msg)
     {
         var menu = new ContextMenu { Tag = msg };
-        // Never act on broadcasters/moderators.
-        if (!msg.IsMod && msg.AuthorId != null)
+        var auth = ChatAuthStore.Twitch;
+
+        // Timeout/ban are hidden for lines where they cannot work: the
+        // broadcaster themselves, or our own logged-in account. (Moderators
+        // CAN be moderated by the broadcaster - the API errors otherwise and
+        // the error is shown in the overlay.)
+        bool ownLine = auth != null &&
+                       string.Equals(msg.Author, auth.Login, StringComparison.OrdinalIgnoreCase);
+        bool canModerateTarget = !msg.IsBroadcaster && !ownLine && msg.AuthorId != null;
+        if (canModerateTarget)
         {
             menu.Items.Add(ModItem(msg, $"Timeout {msg.Author} (10 min)", $"timed out {msg.Author} for 10 min",
-                (auth, broadcasterId, ct) => ModerationService.TimeoutAsync(auth, broadcasterId, msg.AuthorId!, 600, "kat toolkit", ct)));
+                (a, broadcasterId, ct) => ModerationService.TimeoutAsync(a, broadcasterId, msg.AuthorId!, 600, "kat toolkit", ct)));
             menu.Items.Add(ModItem(msg, $"Timeout {msg.Author} (1 hour)", $"timed out {msg.Author} for 1 hour",
-                (auth, broadcasterId, ct) => ModerationService.TimeoutAsync(auth, broadcasterId, msg.AuthorId!, 3600, "kat toolkit", ct)));
+                (a, broadcasterId, ct) => ModerationService.TimeoutAsync(a, broadcasterId, msg.AuthorId!, 3600, "kat toolkit", ct)));
             menu.Items.Add(ModItem(msg, $"Ban {msg.Author}", $"banned {msg.Author}",
-                (auth, broadcasterId, ct) => ModerationService.BanAsync(auth, broadcasterId, msg.AuthorId!, "kat toolkit", ct)));
+                (a, broadcasterId, ct) => ModerationService.BanAsync(a, broadcasterId, msg.AuthorId!, "kat toolkit", ct)));
         }
         if (msg.MsgId != null)
         {
             menu.Items.Add(ModItem(msg, "Delete message", $"deleted {msg.Author}'s message",
-                (auth, broadcasterId, ct) => ModerationService.DeleteMessageAsync(auth, broadcasterId, msg.MsgId!, ct)));
+                (a, broadcasterId, ct) => ModerationService.DeleteMessageAsync(a, broadcasterId, msg.MsgId!, ct)));
+        }
+        if (!canModerateTarget)
+        {
+            // Say WHY instead of silently hiding the items.
+            string why = msg.IsBroadcaster ? "broadcaster - cannot be timed out or banned"
+                : ownLine ? "your own line - no timeout/ban"
+                : "no user id on this line - no timeout/ban";
+            menu.Items.Insert(0, new MenuItem { Header = why, IsEnabled = false });
         }
         return menu.Items.Count == 0 ? null : menu;
     }
@@ -293,6 +309,10 @@ public partial class OverlayWindow : Window
         if (_atBottom)
             Dispatcher.BeginInvoke(DispatcherPriority.Background, () => Scroller.ScrollToEnd());
     }
+
+    // One external line (a fired !command shown on the overlays), from any
+    // thread.
+    public void InjectExternal(ChatMessage msg) => Dispatcher.BeginInvoke(() => AppendMessage(msg));
 
     // Fake chat lines injected straight into the list - verifies placement,
     // size, wrapping and colors without waiting for (or needing) real chat.

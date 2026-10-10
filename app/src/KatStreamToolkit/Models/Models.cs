@@ -184,6 +184,7 @@ public class CommandConfig : ObservableBase
     private string _response = "";
     private string _scene = "";
     private bool _enabled = true;
+    private bool _showOnOverlay = true;
     private int _cooldownSeconds = 5;
 
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -191,6 +192,10 @@ public class CommandConfig : ObservableBase
     public string Scene { get => _scene; set => Set(ref _scene, value); }
     public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
     public int CooldownSeconds { get => _cooldownSeconds; set => Set(ref _cooldownSeconds, Math.Clamp(value, 0, 600)); }
+
+    // When on, firing the command shows the reply (or who used it) as a "bot"
+    // line in the chat overlays.
+    public bool ShowOnOverlay { get => _showOnOverlay; set => Set(ref _showOnOverlay, value); }
 }
 
 // One active watchdog alarm, shown in the red banner. Id is stable per condition

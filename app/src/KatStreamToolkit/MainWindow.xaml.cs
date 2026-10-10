@@ -39,6 +39,11 @@ public partial class MainWindow : Window
             if (_overlayWindows.TryGetValue(overlay.Id, out var window))
                 window.InjectTestMessages();
         };
+        _vm.OverlayChatLine += msg => Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var window in _overlayWindows.Values)
+                window.InjectExternal(msg);
+        });
 
         foreach (var overlay in _vm.Overlays)
             OpenOverlay(overlay);

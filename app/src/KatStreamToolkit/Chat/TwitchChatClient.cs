@@ -287,6 +287,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
         string? msgId = null;
         string? authorId = null;
         bool isMod = false;
+        bool isBroadcaster = false;
         if (tagsPart != null)
         {
             foreach (var pair in tagsPart.Split(';'))
@@ -299,9 +300,16 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                 else if (key == "color" && val.Length > 1) color = val;
                 else if (key == "id" && val.Length > 0) msgId = val;
                 else if (key == "user-id" && val.Length > 0) authorId = val;
-                else if (key == "badges" &&
-                         (val.Contains("broadcaster/") || val.Contains("moderator/")))
-                    isMod = true;
+                else if (key == "badges")
+                {
+                    if (val.Contains("broadcaster/"))
+                    {
+                        isMod = true;
+                        isBroadcaster = true;
+                    }
+                    else if (val.Contains("moderator/"))
+                        isMod = true;
+                }
             }
         }
 
@@ -324,6 +332,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
             MsgId = msgId,
             AuthorId = authorId,
             IsMod = isMod,
+            IsBroadcaster = isBroadcaster,
         });
     }
 

@@ -21,6 +21,9 @@ public sealed class ChatMessage
     // must never act on these.
     public bool IsMod { get; init; }
 
+    // The author is the channel broadcaster (subset of IsMod).
+    public bool IsBroadcaster { get; init; }
+
     public string PlatformTag => Platform switch
     {
         "Twitch" => "T",

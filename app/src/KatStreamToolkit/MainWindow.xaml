@@ -395,6 +395,7 @@
                               HeadersVisibility="Column">
                         <DataGrid.Columns>
                             <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
+                            <DataGridCheckBoxColumn Header="On overlay" Binding="{Binding ShowOnOverlay, UpdateSourceTrigger=PropertyChanged}" Width="75" />
                             <DataGridTextColumn Header="Command (without !)" Binding="{Binding Name}" Width="160" />
                             <DataGridTextColumn Header="Chat reply" Binding="{Binding Response}" Width="*" />
                             <DataGridTextColumn Header="OBS scene (optional)" Binding="{Binding Scene}" Width="180" />

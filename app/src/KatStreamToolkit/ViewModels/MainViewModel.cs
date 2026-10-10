@@ -27,6 +27,7 @@ public class MainViewModel : ObservableBase
     public event Action<OverlayConfig>? OverlayAdded;
     public event Action<OverlayConfig>? OverlayRemoved;
     public event Action<OverlayConfig>? OverlayTestMessages;
+    public event Action<KatStreamToolkit.Chat.ChatMessage>? OverlayChatLine;
 
     public AppConfig Config { get; }
     public ObservableCollection<DestinationConfig> Destinations { get; } = new();
@@ -1089,6 +1090,7 @@ public class MainViewModel : ObservableBase
         // its ChatHub entries share connections with the overlays.
         _commandRunner = new CommandRunner(Config, SwitchObsSceneAsync);
         _commandRunner.Activity += s => Application.Current?.Dispatcher.BeginInvoke(() => SetCommandActivity(s));
+        _commandRunner.OverlayLine = msg => OverlayChatLine?.Invoke(msg);
         SyncTwitchAuth();
         _commandRunner.SyncSources();
 
