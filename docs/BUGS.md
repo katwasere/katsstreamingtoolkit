@@ -466,3 +466,135 @@ Four stacked causes:
 All findings from both passes are now fixed; the only [OPEN]-worthy leftover
 is the BUG-18 bandwidth-math claim, which turned out to be correct as written
 (verified: 0.45 GB/h per Mbps already contains the bits-to-bytes division).
+
+---
+
+# Third-pass findings
+
+Full rescan of every source file (all services, chat clients, views, XAML and
+server docs) after the second-pass fixes landed. All items were found and
+**[FIXED]** in this pass. Line numbers refer to the tree at the time of the fix.
+
+### BUG-33. Custom-layout crop preview always draws the crop centered - [FIXED]
+- `CropOverlay` renders the kept region at `(SourceW - CropW) / 2` and takes no
+  X/Y at all; `UpdatePreview` only sets `CropW`/`CropH`. For CenterCrop that is
+  correct (the crop is always centered), but a Custom portrait destination's
+  crop window is draggable (`SourceCrop_MouseDown/Move` write `dest.CropX/Y`,
+  the server honors them), so after a drag the green outline + dim-out stay
+  centered while the result box and the relay both use the moved crop. The
+  source-frame preview lies about what is kept.
+- **Files**: `Views/OutputPreviewElements.cs` (CropOverlay.OnRender),
+  `Views/OutputStudio.xaml.cs` (UpdatePreview crop section).
+- **Fix**: CropOverlay gained CropX/CropY properties (NaN default = the historic
+  centered behavior); UpdatePreview passes the real crop origin (normalized
+  layout or ComputeCropRect) so the outline moves with a dragged crop.
+
+### BUG-34. Legacy custom foreground drag uses the wrong width (right ~44% not draggable) - [FIXED]
+- The foreground is FgScale of the output HEIGHT and 9:16 wide, i.e.
+  FgScale*1080 of the 1080-wide output - its normalized width is plain
+  `FgScale` (NormalizedCustomLayout clamps FgX to `1 - fgScale`, and
+  RenderLegacyCustom draws `fgW = fgH * 9/16` of a 158-wide canvas ≈ FgScale).
+  The result-box drag code instead uses `n.FgScale * 9.0 / 16.0` as the width
+  in BOTH the hit test (`CustomResult_MouseDown`:
+  `nx > n.FgX + n.FgScale * 9.0 / 16.0`) and the drag clamp
+  (`CustomResult_MouseMove`). Effect: clicking the right ~44% of the
+  previewed stream never starts a drag, and drags stop early at the right edge.
+- **File**: `Views/OutputStudio.xaml.cs` (CustomResult_MouseDown/MouseMove).
+- **Fix**: both spots use plain `n.FgScale` for the width, matching
+  NormalizedCustomLayout's `1 - fgScale` clamp and RenderLegacyCustom's drawing.
+
+### BUG-35. Watchdog "encoder frozen" can never fire when no snapshot age is known - [FIXED]
+- `ParseHealthSnapshot` records an age only if the AGES probe returned a line
+  for that destination. `ApplyHealth` reads it with
+  `snap.SnapshotAges.TryGetValue(d.Id, out int age)` - a missing age reads as
+  0 ("0s old"), so a running encoder with no readable snapshot age is instantly
+  marked "was healthy", and the frozen condition (`wasHealthy && age > 60`)
+  can never trigger for it. The exact failure the check exists for (encoder
+  alive, snapshots not advancing or absent) is invisible whenever the age
+  probe yields nothing. Related nit: the AGES glob `/tmp/kat-preview-*.jpg`
+  also matches `kat-preview-test-*.jpg`, so a leftover test card could feed a
+  destination's age (they are rm'd after each run, so this needs a hard kill).
+- **Files**: `DeployService.ParseHealthSnapshot`, `MainViewModel.ApplyHealth`.
+- **Fix**: ApplyHealth tracks "age known" (`hasAge`); only a REAL fresh age
+  (≤ 30s) marks the encoder healthy. Frozen now fires on a stale file (> 60s)
+  immediately, or after two ticks with no readable age (so an encoder restart
+  gap - kill, nginx respawn, first frame - stays silent), with the alarm text
+  naming the unreadable-snapshot case. The test snapshot moved out of the
+  watchdog's glob: `/tmp/kat-preview-test-*.jpg` is now `/tmp/kat-test-*.jpg`
+  (pkill token `kat-test`), so a leftover test card can never feed a
+  destination's frozen-frame age.
+
+### BUG-36. Test-card verification starves later destinations (serial polling vs 8s timeout) - [FIXED]
+- `StartTestEncoders` starts every routed encoder under `timeout 8` (the test
+  snapshot is deleted afterwards), then verifies serially: up to 8 x 400ms per
+  destination. From roughly the 4th destination on, polling begins after the
+  8s window already closed, so those files are gone before they are checked -
+  `verified` undercounts ("could not start the test encoders" when the count
+  is 0 even though encoders ran) and later outputs' cards may never show the
+  card even though it played.
+- **File**: `RelayPreviewService.StartTestEncoders` (verification loop).
+- **Fix**: one shared 7s deadline with round-robin polling over the still-
+  pending destinations (400ms per round) - every encoder gets checked while
+  its run is alive regardless of position in the list.
+
+### BUG-37. server/nginx.conf.example contradicts the generated config - [FIXED, doc / mild security]
+- The hand-deploy example still shows: the dead `push.tiktokcdn.com` default
+  (cleared from real configs in BUG-30 - an nginx start against the example
+  restart-loops), the hard `-map 0:a` that killed no-audio streams (BUG-20),
+  and `listen 8080` WITHOUT the loopback bind while its own comment claims
+  "docker-compose binds 127.0.0.1:8080" - compose actually runs host
+  networking now and the real config listens on `127.0.0.1:8080`. Anyone
+  deploying from the example exposes /stat to the internet. Also
+  `BuildSetupGuide` says "Frankfurt/Ashgate EU" - Ashgate is not a Hetzner
+  location (presumably Falkenstein was meant).
+- **Files**: `server/nginx.conf.example`, `ServerExporter.BuildSetupGuide`.
+- **Fix**: the example now uses `-map 0:a?` (with a comment why), a
+  paste-your-ingest TikTok placeholder instead of the dead default host, and
+  `listen 127.0.0.1:8080` with a host-networking-accurate comment; the setup
+  guide says Falkenstein instead of the nonexistent "Ashgate".
+
+### BUG-38. Light changes re-trigger full Refresh + config-rewrite churn - [FIXED]
+- `DestinationConfig.PushLight`/`LiveLight` raise PropertyChanged for
+  themselves, and `DestinationPropertyChanged` in MainViewModel calls
+  `Refresh()` for EVERY property. Every 10s watchdog tick that flips a light
+  therefore regenerates the whole nginx preview and queues a config+secrets
+  save (1s debounce) - wasted work and pointless disk writes mid-stream.
+  Refresh only depends on the geometry/bitrate/URL-ish properties.
+- **Files**: `Models/Models.cs` (PushLight/LiveLight setters),
+  `MainViewModel.DestinationPropertyChanged`.
+- **Fix**: `DestinationPropertyChanged` returns early for
+  PushLight/PushLightText/LiveLight/LiveLightText (mirroring the Output
+  Studio's own filter); all config-relevant properties still refresh.
+
+### BUG-39. AtomicWrite's .bak is written but never used for recovery - [FIXED, minor]
+- `ConfigStore.AtomicWrite` keeps the previous good file as `.bak`, but `Load`
+  on a corrupt config.json falls straight to `CreateDefaults` and ignores the
+  backup - the one scenario the .bak exists for is not handled. Similarly
+  `SecretsStore.Load` returns an empty SecretsData on any parse error, so a
+  corrupt keys file silently shows no keys until the user reopens a file.
+- **Files**: `ConfigStore.Load` / `ConfigStore.AtomicWrite`,
+  `SecretsStore.Load`.
+- **Fix**: both `Load`s try `path + ".bak"` on parse failure (or missing file)
+  before falling back to defaults/empty. No UI warning: the stores have no
+  channel to the UI at load time, and recovering the data is the substantive
+  half - noted here so the simplification is deliberate.
+
+## Third-pass summary
+
+| # | Area | Severity | Status |
+|---|------|----------|--------|
+| BUG-33 | Crop preview ignores dragged crop position | Low (visual) | FIXED |
+| BUG-34 | Legacy custom fg drag hit-test 44% too narrow | Low (UI) | FIXED |
+| BUG-35 | Frozen-encoder watchdog blind when age unknown | Medium | FIXED |
+| BUG-36 | Test card starves outputs past the 3rd-4th | Medium-low | FIXED |
+| BUG-37 | Stale nginx example (dead host, open /stat) | Low (doc/security) | FIXED |
+| BUG-38 | Light flips trigger Refresh + save churn | Low (perf) | FIXED |
+| BUG-39 | .bak never used for recovery | Low | FIXED |
+
+Verified NOT bugs during this pass (checked, no change needed): the legacy
+`BuildLegacyCustomGraph` px clamping (FloorEven bounds both axes); the
+base64-in-base64 health/preview command quoting; `MoveKeysFile` reload path;
+the OverlayWindow status generation counter; `ChatHub` activate-before-register
+and refcounting; `SecretsStore.Capture` duplicate-id handling; Twitch tag
+unescaping order; `tpad`+`adelay` delay pairing; `Url()` masking when keys are
+hidden; the ComboBox popup MinWidth RelativeSource binding.

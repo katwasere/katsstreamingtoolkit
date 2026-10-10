@@ -99,10 +99,21 @@ public class CropOverlay : FrameworkElement
     public static readonly DependencyProperty CropHProperty = DependencyProperty.Register(
         nameof(CropH), typeof(double), typeof(CropOverlay), new FrameworkPropertyMetadata(1080.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    // Crop origin in source pixels. NaN (= default) keeps the historic centered
+    // behavior for CenterCrop; Custom layouts pass their real (draggable) origin
+    // so the outline moves with the crop instead of always sitting centered.
+    public static readonly DependencyProperty CropXProperty = DependencyProperty.Register(
+        nameof(CropX), typeof(double), typeof(CropOverlay), new FrameworkPropertyMetadata(double.NaN, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty CropYProperty = DependencyProperty.Register(
+        nameof(CropY), typeof(double), typeof(CropOverlay), new FrameworkPropertyMetadata(double.NaN, FrameworkPropertyMetadataOptions.AffectsRender));
+
     public double SourceW { get => (double)GetValue(SourceWProperty); set => SetValue(SourceWProperty, value); }
     public double SourceH { get => (double)GetValue(SourceHProperty); set => SetValue(SourceHProperty, value); }
     public double CropW { get => (double)GetValue(CropWProperty); set => SetValue(CropWProperty, value); }
     public double CropH { get => (double)GetValue(CropHProperty); set => SetValue(CropHProperty, value); }
+    public double CropX { get => (double)GetValue(CropXProperty); set => SetValue(CropXProperty, value); }
+    public double CropY { get => (double)GetValue(CropYProperty); set => SetValue(CropYProperty, value); }
 
     protected override void OnRender(DrawingContext dc)
     {
@@ -110,8 +121,8 @@ public class CropOverlay : FrameworkElement
         if (w <= 0 || h <= 0 || SourceW <= 0 || SourceH <= 0) return;
 
         double sx = w / SourceW, sy = h / SourceH;
-        double cx = Math.Max(0, (SourceW - CropW) / 2) * sx;
-        double cy = Math.Max(0, (SourceH - CropH) / 2) * sy;
+        double cx = (double.IsNaN(CropX) ? Math.Max(0, (SourceW - CropW) / 2) : Math.Max(0, CropX)) * sx;
+        double cy = (double.IsNaN(CropY) ? Math.Max(0, (SourceH - CropH) / 2) : Math.Max(0, CropY)) * sy;
         double cw = CropW * sx, ch = CropH * sy;
 
         var dim = new SolidColorBrush(Color.FromArgb(160, 0, 0, 0));

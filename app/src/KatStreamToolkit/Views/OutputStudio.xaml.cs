@@ -490,18 +490,22 @@ public partial class OutputStudio : UserControl
 
         if (isCrop || (isCustom && portraitOut))
         {
-            double cropPxW, cropPxH;
+            double cropPxW, cropPxH, cropPxX, cropPxY;
             if (isCustom)
             {
                 var n = RelayConfigGenerator.NormalizedCustomLayout(dest, srcW, srcH);
                 cropPxW = n.CropW * srcW;
                 cropPxH = n.CropH * srcH;
+                cropPxX = n.CropX * srcW;
+                cropPxY = n.CropY * srcH;
             }
             else
             {
                 var c = RelayConfigGenerator.ComputeCropRect(srcW, srcH);
                 cropPxW = c.CropW;
                 cropPxH = c.CropH;
+                cropPxX = c.X;
+                cropPxY = c.Y;
             }
 
             double fit = Math.Min(380.0 / srcW, 200.0 / srcH);
@@ -513,6 +517,10 @@ public partial class OutputStudio : UserControl
             srcOverlay.SourceH = srcH;
             srcOverlay.CropW = cropPxW;
             srcOverlay.CropH = cropPxH;
+            // A dragged Custom crop must move the outline too - the old overlay
+            // only ever drew a centered crop (BUG-33).
+            srcOverlay.CropX = cropPxX;
+            srcOverlay.CropY = cropPxY;
         }
 
         if (isCrop && portraitOut)
@@ -1167,7 +1175,10 @@ public partial class OutputStudio : UserControl
         }
 
         var n = NormalizedLayoutFor(dest);
-        if (nx < n.FgX || nx > n.FgX + n.FgScale * 9.0 / 16.0 || ny < n.FgY || ny > n.FgY + n.FgScale)
+        // The foreground is FgScale of the output HEIGHT and 9:16 wide, so its
+        // normalized WIDTH is plain FgScale (FgScale*1080 of 1080) - the old
+        // `FgScale * 9/16` made the right ~44% of the stream ignore drags.
+        if (nx < n.FgX || nx > n.FgX + n.FgScale || ny < n.FgY || ny > n.FgY + n.FgScale)
             return;
         _fgDragging = true;
         _fgDragOffset = new Point(nx - n.FgX, ny - n.FgY);
@@ -1192,7 +1203,7 @@ public partial class OutputStudio : UserControl
         }
         if (!_fgDragging) return;
         var n = NormalizedLayoutFor(dest);
-        dest.FgX = Math.Clamp(nx - _fgDragOffset.X, 0, Math.Max(0, 1 - n.FgScale * 9.0 / 16.0));
+        dest.FgX = Math.Clamp(nx - _fgDragOffset.X, 0, Math.Max(0, 1 - n.FgScale));
         dest.FgY = Math.Clamp(ny - _fgDragOffset.Y, 0, Math.Max(0, 1 - n.FgScale));
         e.Handled = true;
     }

@@ -27,25 +27,30 @@ public static class ConfigStore
 
     public static AppConfig Load()
     {
-        try
+        // A config that fails to parse (torn write, disk hiccup) falls back to
+        // the .bak that AtomicWrite keeps - the backup existed exactly for this
+        // and was never read. Defaults only when BOTH copies are unreadable.
+        foreach (var path in new[] { FilePath, FilePath + ".bak" })
         {
-            if (File.Exists(FilePath))
+            try
             {
-                var json = File.ReadAllText(FilePath);
+                if (!File.Exists(path))
+                    continue;
+                var json = File.ReadAllText(path);
                 var cfg = JsonSerializer.Deserialize<AppConfig>(json, Options);
-                if (cfg != null)
-                {
-                    cfg.Destinations ??= new List<DestinationConfig>();
-                    cfg.Overlays ??= new List<OverlayConfig>();
-                    cfg.Upstream ??= new UpstreamConfig();
-                    cfg.MyChannels ??= new MyChannelsConfig();
-                    ClearKnownDeadDefaultIngest(cfg);
-                    return cfg;
-                }
+                if (cfg == null)
+                    continue;
+                cfg.Destinations ??= new List<DestinationConfig>();
+                cfg.Overlays ??= new List<OverlayConfig>();
+                cfg.Upstream ??= new UpstreamConfig();
+                cfg.MyChannels ??= new MyChannelsConfig();
+                ClearKnownDeadDefaultIngest(cfg);
+                return cfg;
             }
-        }
-        catch
-        {
+            catch
+            {
+                // Try the next copy.
+            }
         }
         return CreateDefaults();
     }

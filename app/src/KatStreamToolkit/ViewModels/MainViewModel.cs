@@ -267,6 +267,7 @@ public class MainViewModel : ObservableBase
                 ClearAlarm("enc:" + d.Id);
                 ClearAlarm("push:" + d.Id);
                 _encoderDownTicks.Remove(d.Id);
+                _encoderNoFrameTicks.Remove(d.Id);
                 _pushErrorTicks.Remove(d.Id);
                 continue;
             }
@@ -274,14 +275,22 @@ public class MainViewModel : ObservableBase
             if (routed)
             {
                 bool running = snap.Encoders.Contains(d.Id);
-                snap.SnapshotAges.TryGetValue(d.Id, out int age);
-                if (running && age >= 0 && age <= 30)
+                // A MISSING age is not "0s old": the old TryGetValue default read
+                // as brand-new, marked the encoder healthy instantly and made the
+                // frozen condition unreachable whenever the age probe yielded
+                // nothing (BUG-35).
+                bool hasAge = snap.SnapshotAges.TryGetValue(d.Id, out int age);
+                if (running && hasAge && age >= 0 && age <= 30)
+                {
                     _encoderWasHealthy[d.Id] = true;
+                    _encoderNoFrameTicks.Remove(d.Id);
+                }
 
                 if (!running)
                 {
                     int ticks = _encoderDownTicks.TryGetValue(d.Id, out int seen) ? seen + 1 : 1;
                     _encoderDownTicks[d.Id] = ticks;
+                    _encoderNoFrameTicks.Remove(d.Id);
                     if (ticks >= 2)
                     {
                         string? reason = DeployService.FindLogReason(snap.LogTail, Config, d);
@@ -298,13 +307,27 @@ public class MainViewModel : ObservableBase
                 }
                 _encoderDownTicks.Remove(d.Id);
 
-                // Frozen: this encoder produced fresh frames before and its
-                // snapshot has stopped advancing while the stream still flows.
+                // Frozen: fresh frames before, none now. A stale FILE is
+                // unambiguous (>60s old); a missing/unreadable age needs two
+                // ticks so an encoder restart gap (kill -> nginx respawn ->
+                // first frame) stays silent.
                 bool wasHealthy = _encoderWasHealthy.TryGetValue(d.Id, out bool wh) && wh;
-                if (wasHealthy && age > 60)
+                bool frozen;
+                if (hasAge)
+                {
+                    frozen = wasHealthy && age > 60;
+                }
+                else
+                {
+                    int noFrame = _encoderNoFrameTicks.TryGetValue(d.Id, out int nft) ? nft + 1 : 1;
+                    _encoderNoFrameTicks[d.Id] = noFrame;
+                    frozen = wasHealthy && noFrame >= 2;
+                }
+                if (frozen)
                 {
                     RaiseAlarm(new WatchdogAlarm("enc:" + d.Id,
-                        $"'{d.Name}' ENCODER FROZEN - alive but no new frames for ~{age}s.", d.Id) { CanRestart = true });
+                        $"'{d.Name}' ENCODER FROZEN - alive but no new frames"
+                        + (hasAge ? $" for ~{age}s." : " (its snapshot is gone or unreadable)."), d.Id) { CanRestart = true });
                     d.PushLight = VerifyLight.Error;
                     TryAutoRestartEncoder(d);
                     continue;
@@ -355,6 +378,7 @@ public class MainViewModel : ObservableBase
     private int _unreachableTicks;
     private readonly Dictionary<Guid, int> _encoderDownTicks = new();
     private readonly Dictionary<Guid, bool> _encoderWasHealthy = new();
+    private readonly Dictionary<Guid, int> _encoderNoFrameTicks = new();
     private readonly Dictionary<Guid, int> _pushErrorTicks = new();
     private readonly Dictionary<Guid, DateTime> _lastAutoRestart = new();
 
@@ -809,6 +833,16 @@ public class MainViewModel : ObservableBase
 
     private void DestinationPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // The lights are status OUTPUT, not config input: Refresh() regenerates
+        // the whole nginx preview and queues a config+secrets save, and the
+        // watchdog/live checks rewrite the lights every 10s/30s - refreshing
+        // for each flip was pure churn (BUG-38).
+        if (e.PropertyName is nameof(DestinationConfig.PushLight)
+            or nameof(DestinationConfig.PushLightText)
+            or nameof(DestinationConfig.LiveLight)
+            or nameof(DestinationConfig.LiveLightText))
+            return;
+
         if (e.PropertyName is nameof(DestinationConfig.Layers) && sender is DestinationConfig d)
         {
             UnhookLayers(d);

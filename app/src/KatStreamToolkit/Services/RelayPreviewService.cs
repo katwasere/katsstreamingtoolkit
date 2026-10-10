@@ -270,7 +270,7 @@ public static class RelayPreviewService
             // murdered the encoders just started for the previous outputs, so
             // only the last destination ever showed the test card.
             Exec(client,
-                "sh -c 'docker exec kat-relay pkill -f kat-preview-test 2>/dev/null' || sudo -n docker exec kat-relay pkill -f kat-preview-test 2>/dev/null || sudo -n docker exec kat-relay pkill -f kat-preview-test 2>/dev/null");
+                "sh -c 'docker exec kat-relay pkill -f kat-test 2>/dev/null' || sudo -n docker exec kat-relay pkill -f kat-test 2>/dev/null || sudo -n docker exec kat-relay pkill -f kat-test 2>/dev/null");
 
             var launched = new List<Guid>();
             foreach (var dest in cfg.Destinations.Where(d =>
@@ -290,20 +290,25 @@ public static class RelayPreviewService
 
             // Verify each encoder actually started by polling for its snapshot
             // file while the runs are still alive (ffmpeg needs ~1s to encode
-            // the first frame).
+            // the first frame). One shared budget, round-robin over the pending
+            // files: the runs die at 8s and delete their snapshot afterwards,
+            // so per-destination serial waits starved every output past the
+            // 3rd-4th - its file was gone before the loop reached it (BUG-36).
             int verified = 0;
-            foreach (var id in launched)
+            var pending = new List<Guid>(launched);
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(7);
+            while (pending.Count > 0 && DateTime.UtcNow < deadline)
             {
-                string testPath = RelayConfigGenerator.SnapshotTestPath(id);
-                for (int attempt = 0; attempt < 8; attempt++)
+                Thread.Sleep(400);
+                for (int i = pending.Count - 1; i >= 0; i--)
                 {
-                    Thread.Sleep(400);
+                    string testPath = RelayConfigGenerator.SnapshotTestPath(pending[i]);
                     string probe = ExecWithStatus(client,
                         $"sh -c 'docker exec kat-relay sh -c \"[ -s {testPath} ]\" 2>/dev/null' || sudo -n docker exec kat-relay sh -c '[ -s {testPath} ]' 2>/dev/null");
                     if (probe == "0")
                     {
                         verified++;
-                        break;
+                        pending.RemoveAt(i);
                     }
                 }
             }

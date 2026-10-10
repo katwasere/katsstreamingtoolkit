@@ -62,17 +62,18 @@ Idea write-ups and Kats ratings (10 = add to roadmap) live in
   verify relay + arrival, so they work for everyone. Scene changes on chat events
   remain in the queue under "OBS auto-switching"; second-PC OBS stays post-release.
 
-## On hold - TikTok chat connector (Kats)
+## On hold - TikTok chat connector (DELAYED UNTIL FURTHER NOTICE)
 
 The connector code is written and wired in (`Chat/TikTokChatClient.cs`: Euler Stream
 room-info pre-check + signed websocket, API key in secrets.json, TikTok chat mode and
 handle fields in the overlay UI) - but it has never run against real Euler responses,
-and Kats is sorting out the Euler Stream key/setup side first, so it is parked until
-then. When picking it back up: if the overlay status sticks on "reconnecting" or
-"waiting for the live", the exact response shapes (`roomInfo.status`, the
-`websocketUrl` sign reply, the chat frames' `event`/`data`/`comment` fields) need
+and it is now **delayed until further notice**: quirks in TikTok's streaming setup mean
+Kats cannot test it for now. TikTok *video* works today and needs none of this - only
+the chat connector is paused. When picking it back up: if the overlay status sticks on
+"reconnecting" or "waiting for the live", the exact response shapes (`roomInfo.status`,
+the `websocketUrl` sign reply, the chat frames' `event`/`data`/`comment` fields) need
 adjusting in `TikTokChatClient` - all parsing there is defensive and fails toward
-clear status text. TikTok *video* works today and needs none of this.
+clear status text.
 
 ## Next - phase two (rated 10/10 in IDEAS - current queue)
 

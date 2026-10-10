@@ -32,20 +32,26 @@ public static class SecretsStore
 
     public static SecretsData Load(string path)
     {
-        try
+        // Same recovery as the config: a keys file that fails to parse falls
+        // back to AtomicWrite's .bak before giving up, instead of silently
+        // showing no keys at all.
+        foreach (var candidate in new[] { path, path + ".bak" })
         {
-            if (File.Exists(path))
+            try
             {
-                var data = JsonSerializer.Deserialize<SecretsData>(File.ReadAllText(path), Options);
+                if (!File.Exists(candidate))
+                    continue;
+                var data = JsonSerializer.Deserialize<SecretsData>(File.ReadAllText(candidate), Options);
                 if (data != null)
                 {
                     data.DestinationKeys ??= new Dictionary<string, string>();
                     return data;
                 }
             }
-        }
-        catch
-        {
+            catch
+            {
+                // Try the next copy.
+            }
         }
         return new SecretsData();
     }

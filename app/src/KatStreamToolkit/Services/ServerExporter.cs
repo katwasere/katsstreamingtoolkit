@@ -195,7 +195,7 @@ public static class ServerExporter
         sb.AppendLine();
         sb.AppendLine("## 1. Get a cheap server (any Ubuntu VPS works)");
         sb.AppendLine("- Hetzner CX22 (~EUR 4/mo, 20 TB traffic) or Oracle Cloud free tier are good picks.");
-        sb.AppendLine($"- Pick a location with good bandwidth to your home AND to the platforms (Frankfurt/Ashgate EU, or Ashburn for US).");
+        sb.AppendLine($"- Pick a location with good bandwidth to your home AND to the platforms (Falkenstein/Frankfurt EU, or Ashburn for US).");
         sb.AppendLine();
         sb.AppendLine("## 2. Install Docker on the server (once)");
         sb.AppendLine("```bash");

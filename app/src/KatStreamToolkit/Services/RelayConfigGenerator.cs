@@ -112,7 +112,10 @@ public static class RelayConfigGenerator
 
     public static string SnapshotPath(Guid destinationId) => $"/tmp/kat-preview-{destinationId:N}.jpg";
 
-    public static string SnapshotTestPath(Guid destinationId) => $"/tmp/kat-preview-test-{destinationId:N}.jpg";
+    // Deliberately NOT under the kat-preview- prefix: the watchdog's age probe
+    // globs /tmp/kat-preview-*.jpg, and the old kat-preview-test-* name made a
+    // leftover test card feed a destination's frozen-frame age.
+    public static string SnapshotTestPath(Guid destinationId) => $"/tmp/kat-test-{destinationId:N}.jpg";
 
     // File name (inside the bundle's backgrounds/ folder and the container's
     // /var/kat-backgrounds mount) for a destination's custom background image.

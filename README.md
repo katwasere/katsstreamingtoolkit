@@ -71,8 +71,10 @@ in OBS, so rotating keys never touches your scenes.
 
 - Working: relay generation + export, Twitch/Kick/YouTube chat overlays,
   portrait renditions (crop + blurred), traffic estimator, hotkey lock/unlock.
-- On the roadmap: TikTok chat, one-click deploy, live status indicators -
-  see `docs/ROADMAP.md`.
+- On the roadmap: moderation + command runner, alert overlays, live status
+  indicators - see `docs/ROADMAP.md`. TikTok chat is written but DELAYED
+  until further notice (cannot be tested right now due to quirks in TikTok's
+  streaming setup); TikTok video needs none of it and works today.
 
 ## Credits & license
 
