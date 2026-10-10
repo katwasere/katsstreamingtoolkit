@@ -4,15 +4,13 @@ public sealed record ChatSourceSpec(string Platform, string Key, Func<IChatClien
 
 public sealed class ChatEntry : IDisposable
 {
+    private readonly object _subsGate = new();
     private readonly List<Action<ChatMessage>> _messageSubs = new();
     private readonly List<Action<string>> _statusSubs = new();
 
     public required IChatClient Client { get; init; }
     public int RefCount { get; set; }
     public string Status { get; private set; } = "starting...";
-
-    public event Action<ChatMessage>? MessageReceived;
-    public event Action? StatusUpdated;
 
     public void Activate()
     {
@@ -21,18 +19,42 @@ public sealed class ChatEntry : IDisposable
         Client.Start();
     }
 
-    private void OnMessage(ChatMessage msg) => MessageReceived?.Invoke(msg);
+    // These are the ONLY paths from the client to subscribers (overlays, the
+    // command runner). An earlier revision raised unused C# events here and
+    // never called the subscription lists - chat flowed into a void: overlays
+    // showed nothing real while test messages (injected past this chain)
+    // worked, and the status line only looked right because Subscribe pushes
+    // the current status once at subscribe time.
+    private void OnMessage(ChatMessage msg)
+    {
+        Action<ChatMessage>[] subs;
+        lock (_subsGate) subs = _messageSubs.ToArray();
+        foreach (var sub in subs)
+        {
+            try { sub(msg); }
+            catch { /* one broken subscriber must not starve the others */ }
+        }
+    }
 
     private void OnStatus(string status)
     {
         Status = status;
-        StatusUpdated?.Invoke();
+        Action<string>[] subs;
+        lock (_subsGate) subs = _statusSubs.ToArray();
+        foreach (var sub in subs)
+        {
+            try { sub(status); }
+            catch { }
+        }
     }
 
     public IDisposable Subscribe(Action<ChatMessage> onMessage, Action<string> onStatus)
     {
-        _messageSubs.Add(onMessage);
-        _statusSubs.Add(onStatus);
+        lock (_subsGate)
+        {
+            _messageSubs.Add(onMessage);
+            _statusSubs.Add(onStatus);
+        }
         onStatus(Status);
         return new Subscription(this, onMessage, onStatus);
     }
@@ -52,8 +74,11 @@ public sealed class ChatEntry : IDisposable
 
         public void Dispose()
         {
-            _entry._messageSubs.Remove(_message);
-            _entry._statusSubs.Remove(_status);
+            lock (_entry._subsGate)
+            {
+                _entry._messageSubs.Remove(_message);
+                _entry._statusSubs.Remove(_status);
+            }
         }
     }
 

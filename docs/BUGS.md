@@ -598,3 +598,20 @@ the OverlayWindow status generation counter; `ChatHub` activate-before-register
 and refcounting; `SecretsStore.Capture` duplicate-id handling; Twitch tag
 unescaping order; `tpad`+`adelay` delay pairing; `Url()` masking when keys are
 hidden; the ComboBox popup MinWidth RelativeSource binding.
+
+## BUG-40: ChatEntry never invoked subscriber lists - overlays deaf to real chat
+
+- **Found**: 2026-10-10, live debugging with per-stage counters (raw/in/shown).
+- **Symptom**: overlays rendered injected test messages but NEVER a single real
+  chat message, on every build since phase one; the header status looked
+  correct only by luck (Subscribe pushes the current status once, and the
+  command runner had connected before overlays subscribed). The !commands
+  runner was equally deaf through the same path.
+- **Root cause**: ChatEntry.Subscribe stored callbacks in _messageSubs/
+  _statusSubs, but OnMessage/OnStatus raised unused C# events
+  (MessageReceived/StatusUpdated) that nothing subscribes to. The lists
+  were never invoked - messages flowed into a void between the client and
+  every consumer.
+- **Files**: Chat/ChatHub.cs (ChatEntry).
+- **Fix**: OnMessage/OnStatus snapshot and invoke the subscription lists under
+  a gate (try/catch per subscriber); dead events removed.
