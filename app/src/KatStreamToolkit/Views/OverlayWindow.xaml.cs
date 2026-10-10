@@ -217,14 +217,56 @@ public partial class OverlayWindow : Window
     // can already find, and ours is built from the clicked line).
     private void OnOverlayRightClick(object sender, MouseButtonEventArgs e)
     {
-        var msg = (e.OriginalSource as FrameworkElement)?.DataContext as ChatMessage;
-        if (msg == null || ChatAuthStore.Twitch == null ||
-            !string.Equals(msg.Platform, "Twitch", StringComparison.OrdinalIgnoreCase))
+        var msg = FindClickedMessage(e.OriginalSource as DependencyObject);
+        if (msg == null) return;
+        e.Handled = true;
+
+        // Never fail silently again: right-clicking an actual chat line always
+        // shows SOMETHING (the old build just returned, which looked broken).
+        if (!string.Equals(msg.Platform, "Twitch", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowMenuNote($"{msg.Platform} moderation isn't wired up yet - Twitch only for now");
             return;
+        }
+        if (ChatAuthStore.Twitch == null)
+        {
+            ShowMenuNote("log in to Twitch (Chat Overlays tab) to moderate this line");
+            return;
+        }
 
         var menu = BuildModMenu(msg);
         if (menu == null) return;
-        e.Handled = true;
+        menu.PlacementTarget = Scroller;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen = true;
+    }
+
+    // A right-click on the chat TEXT lands on a Run inside the line's
+    // TextBlock - and Run is a FrameworkContentElement, NOT a FrameworkElement,
+    // so a plain cast came back null and the menu never opened (clicking blank
+    // padding worked, clicking the words didn't). Walk up the content and
+    // visual trees until something carries a ChatMessage.
+    private static ChatMessage? FindClickedMessage(DependencyObject? node)
+    {
+        while (node != null)
+        {
+            if (node is FrameworkElement { DataContext: ChatMessage msg })
+                return msg;
+            node = node switch
+            {
+                System.Windows.FrameworkContentElement content => content.Parent,
+                System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                    => System.Windows.Media.VisualTreeHelper.GetParent(node),
+                _ => LogicalTreeHelper.GetParent(node),
+            };
+        }
+        return null;
+    }
+
+    private void ShowMenuNote(string text)
+    {
+        var menu = new ContextMenu();
+        menu.Items.Add(new MenuItem { Header = text, IsEnabled = false });
         menu.PlacementTarget = Scroller;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen = true;

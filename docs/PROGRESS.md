@@ -4,8 +4,9 @@
 
 Phase one + go-live are shipped and working for Kat (relay, deploy, watchdog,
 start/end stream). Today was the **moderation + command runner foundation**
-plus a long debugging session on chat delivery. Everything below is committed
-on `main` (latest: `880971f`).
+plus a long debugging session on chat delivery. **Moderation and commands are
+fully verified by Kat, including timeout/ban/delete against a real second
+account.** Everything below is committed and pushed on `main`.
 
 ## Shipped today (commit order)
 
@@ -24,30 +25,27 @@ on `main` (latest: `880971f`).
 | `e5aff2a` | Broadcaster commands no longer swallowed by self-echo filter; per-command "On overlay" toggle; right-click menu explains hidden items |
 | `880971f` | Moderation menu opened manually on right-click (ContextMenuService never fired on chromeless windows) |
 | `da9d1df` | **BUG-40**: ChatEntry never invoked its subscriber lists - real chat NEVER reached overlays/runner in any build (test messages masked it). Fixed; recorded in BUGS.md |
+| (this push) | **BUG-41**: right-click on chat TEXT hit-tests to a `Run` (FrameworkContentElement) - the `as FrameworkElement` cast returned null and the menu never opened; now walks content+visual trees, and right-clicking a real line always explains itself. **BUG-42/round 3**: Chat Overlays tab relaid out - big channels/account column (fills, min 420) + compact 500px "Settings for:" column on the right, both scroll. **BUG-43**: dark ContextMenu/MenuItem templates (the menu had default bright chrome + washed-out text) |
 
-## Chat pipeline status (verified end-to-end)
+## Verification status (all done, Kat)
 
-Twitch IRC -> parse (`in`) -> ChatEntry subscribers -> overlay render (`shown`)
-all confirmed working with live counters. Anonymous reads work; OAuth login
-works (Kat's app is Confidential -> Client Secret field, or switch app to
-Public). Replies send via the logged-in account; broadcaster-typed commands
-trigger correctly.
-
-## Awaiting Kat's verification (build 2026-10-10 19:43+)
-
-1. `!test` reply actually appears in Twitch chat (was blocked by BUG-40 then
-   the self-echo filter - both fixed).
-2. Right-click moderation menu on an unlocked overlay (new manual open).
-   Full timeout/ban menu needs a message from a second account - own lines
-   show explainer + Delete only (broadcaster can't be banned).
-3. "On overlay" checkbox per command (bot line in overlay when fired).
-4. Optional: separate bot account flow (create + /mod + log in with it) -
-   no code needed.
+- `!test` reply in Twitch chat - **WORKING**.
+- Right-click moderation menu on unlocked overlay - **WORKING**, including
+  **timeout/ban/delete verified with a real second account's message**.
+- `!commands` runner + per-command "On overlay" toggle - **WORKING**.
+- Rearranged Chat Overlays tab (big left, compact settings right) - **APPROVED**.
+- Separate bot account flow - delayed by Kat (no code needed anyway).
 
 ## Known next steps (docs/ROADMAP.md)
 
-- Chat: alert overlays (next big item), moderation leftovers (filter lists,
-  slow-mode UI toggle, Kick/YouTube OAuth), server-side kat-bot (Nightbot-style).
+- **Alert overlays** - the agreed next big item: follows/subs/raids as animated
+  overlay elements. Twitch EventSub rides the existing OAuth (socket needed);
+  overlay windows + ChatHub already exist. Kick/YouTube equivalents later.
+- Moderation leftovers: slow-mode UI toggle (Helix endpoint already wired in
+  `ModerationService` - smallest quick win), shared filter lists, Kick/YouTube
+  OAuth for send/mod on those platforms.
+- Polls/predictions widget, OBS auto-switching on chat events (hook into the
+  alert work).
 - Test note: exclusive-fullscreen games swallow mouse input - borderless needed
   for overlay clicks.
 

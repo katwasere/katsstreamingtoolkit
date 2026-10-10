@@ -242,60 +242,73 @@
             <TabItem Header="Chat Overlays">
                 <Grid Margin="8">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="220" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" MinWidth="420" />
+                        <ColumnDefinition Width="500" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                        <TextBlock Text="My channels" FontSize="14" FontWeight="Bold" Margin="0,0,0,4" />
-                        <TextBlock Text="Twitch channel" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.MyChannels.TwitchChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
-                        <TextBlock Text="Kick channel" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.MyChannels.KickChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
-                        <TextBlock Text="YouTube (video URL or @handle)" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.MyChannels.YouTubeUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
-                        <TextBlock Text="TikTok @handle" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.MyChannels.TikTokHandle, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
-                        <TextBlock Text="TikTok chat API key (Euler Stream)" FontSize="11" Foreground="#FF9AA0A8" />
-                        <local:SecretBox SecretText="{Binding EulerApiKey}" Margin="0,2,0,2" />
-                        <TextBlock Text="Free key: eulerstream.com - API keys. Only needed for TikTok chat; TikTok video goes through the relay without it." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <!-- Left (dominant) column: the overlays list and the
+                         once-only setup get the room; fields stretch with the
+                         window. The compact "Settings for:" panel sits on the
+                         right and scrolls on its own. -->
+                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" Margin="0,0,12,0">
+                        <StackPanel>
+                            <TextBlock Text="Overlays" FontSize="14" FontWeight="Bold" Margin="0,0,0,4" />
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
+                                <Button Content="Remove" Command="{Binding RemoveOverlayCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            </StackPanel>
+                            <ListBox ItemsSource="{Binding Overlays}" SelectedItem="{Binding SelectedOverlay}"
+                                     MinHeight="150" DisplayMemberPath="Name" />
+                            <Button Command="{Binding ToggleOverlaysLockCommand}" Padding="10,3" Margin="0,8,0,0"
+                                    HorizontalContentAlignment="Left">
+                                <TextBlock Text="Toggle click-through on ALL overlays (Ctrl+Alt+C / X)" TextWrapping="Wrap" />
+                            </Button>
+                            <TextBlock Text="Use this in-game: unlocked overlays accept mouse clicks (moderation!), locked ones pass clicks through to your game. Works from fullscreen."
+                                       FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,8" />
 
-                        <TextBlock Text="Twitch account (send + mod actions)" FontSize="11" Foreground="#FF9AA0A8" Margin="0,0,0,2" />
-                        <TextBlock Text="Twitch app Client ID (dev.twitch.tv console)" FontSize="11" Foreground="#FF9AA0A8" />
-                        <TextBox Text="{Binding Config.TwitchClientId, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,4" />
-                        <TextBlock Text="Client Secret (only if your app's Client Type is Confidential)" FontSize="11" Foreground="#FF9AA0A8" />
-                        <local:SecretBox SecretText="{Binding TwitchClientSecret}" Margin="0,2,0,4" />
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Log in..." Command="{Binding LoginTwitchCommand}" Padding="10,3" />
-                            <Button Content="Log out" Command="{Binding LogoutTwitchCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            <Separator Margin="0,2,0,10" />
+
+                            <TextBlock Text="My channels" FontSize="14" FontWeight="Bold" Margin="0,0,0,4" />
+                            <TextBlock Text="Twitch channel" FontSize="11" Foreground="#FF9AA0A8" />
+                            <TextBox Text="{Binding Config.MyChannels.TwitchChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                            <TextBlock Text="Kick channel" FontSize="11" Foreground="#FF9AA0A8" />
+                            <TextBox Text="{Binding Config.MyChannels.KickChannel, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                            <TextBlock Text="YouTube (video URL or @handle)" FontSize="11" Foreground="#FF9AA0A8" />
+                            <TextBox Text="{Binding Config.MyChannels.YouTubeUrl, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                            <TextBlock Text="TikTok @handle" FontSize="11" Foreground="#FF9AA0A8" />
+                            <TextBox Text="{Binding Config.MyChannels.TikTokHandle, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,6" />
+                            <TextBlock Text="TikTok chat API key (Euler Stream)" FontSize="11" Foreground="#FF9AA0A8" />
+                            <local:SecretBox SecretText="{Binding EulerApiKey}" Margin="0,2,0,2" />
+                            <TextBlock Text="Free key: eulerstream.com - API keys. Only needed for TikTok chat; TikTok video goes through the relay without it." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,8" />
+                            <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,4" />
+                            <Button Content="Sync overlays from My channels" Command="{Binding SyncOverlaysFromMyChannelsCommand}"
+                                    Padding="10,3" HorizontalAlignment="Left" />
+                            <TextBlock Text="Points every overlay at the channels above (for after rotating channels) and reconnects them." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,8" />
+
+                            <Separator Margin="0,2,0,10" />
+
+                            <TextBlock Text="Twitch account (send + mod actions)" FontSize="14" FontWeight="Bold" Margin="0,0,0,4" />
+                            <TextBlock Text="Twitch app Client ID (dev.twitch.tv console)" FontSize="11" Foreground="#FF9AA0A8" />
+                            <TextBox Text="{Binding Config.TwitchClientId, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,4" />
+                            <TextBlock Text="Client Secret (only if your app's Client Type is Confidential)" FontSize="11" Foreground="#FF9AA0A8" />
+                            <local:SecretBox SecretText="{Binding TwitchClientSecret}" Margin="0,2,0,4" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Log in..." Command="{Binding LoginTwitchCommand}" Padding="10,3" />
+                                <Button Content="Log out" Command="{Binding LogoutTwitchCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding TwitchAccountText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding TwitchLoginStatus, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode. 'missing client secret' on login means: set the app's Client Type to Public, or paste its Client Secret above." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,4" />
+                            <TextBlock Text="Tip: replies are sent from whichever account is logged in here. For a true bot identity, create a separate Twitch account, mod it in your channel, and log in with that one." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+                            <Button Content="Chat diagnostics (raw IRC)..." Command="{Binding CaptureChatDiagnosticsCommand}"
+                                    Padding="10,3" HorizontalAlignment="Left" />
+                            <TextBlock Text="Connects a throwaway reader to your Twitch channel for 15 seconds and shows every raw line. Type in your chat while it runs - if PRIVMSG lines appear here but not in the overlay, the problem is rendering; if not, the problem is delivery." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,4" />
                         </StackPanel>
-                        <TextBlock Text="{Binding TwitchAccountText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
-                        <TextBlock Text="{Binding TwitchLoginStatus, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,0" />
-                        <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode. 'missing client secret' on login means: set the app's Client Type to Public, or paste its Client Secret above." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,4" />
-                        <TextBlock Text="Tip: replies are sent from whichever account is logged in here. For a true bot identity, create a separate Twitch account, mod it in your channel, and log in with that one." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,10" />
-
-                        <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,6" />
-                        <Button Content="Sync overlays from My channels" Command="{Binding SyncOverlaysFromMyChannelsCommand}"
-                                Padding="10,3" HorizontalAlignment="Left" />
-                        <TextBlock Text="Points every overlay at the channels above (for after rotating channels) and reconnects them." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
-
-                        <Button Content="Chat diagnostics (raw IRC)..." Command="{Binding CaptureChatDiagnosticsCommand}"
-                                Padding="10,3" HorizontalAlignment="Left" />
-                        <TextBlock Text="Connects a throwaway reader to your Twitch channel for 15 seconds and shows every raw line. Type in your chat while it runs - if PRIVMSG lines appear here but not in the overlay, the problem is rendering; if not, the problem is delivery." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
-
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
-                            <Button Content="Remove" Command="{Binding RemoveOverlayCommand}" Margin="6,0,0,0" Padding="10,3" />
-                        </StackPanel>
-                        <Button Content="Toggle click-through on ALL overlays (Ctrl+Alt+C / X)" Command="{Binding ToggleOverlaysLockCommand}"
-                                Padding="10,3" HorizontalAlignment="Left" Margin="0,8,0,0" />
-                        <TextBlock Text="Use this in-game: unlocked overlays accept mouse clicks (moderation!), locked ones pass clicks through to your game. Works from fullscreen." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,6" />
-                        <ListBox ItemsSource="{Binding Overlays}" SelectedItem="{Binding SelectedOverlay}"
-                                 MinHeight="220" Margin="0,0,0,0" DisplayMemberPath="Name" />
-                    </StackPanel>
+                    </ScrollViewer>
 
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
-                        <StackPanel DataContext="{Binding SelectedOverlay}" Margin="8,0,0,0">
+                        <StackPanel DataContext="{Binding SelectedOverlay}">
                             <TextBlock FontSize="15" FontWeight="Bold" Margin="0,0,0,8">
                                 <Run Text="Settings for: " /><Run Text="{Binding Name, Mode=OneWay}" />
                             </TextBlock>
@@ -304,8 +317,8 @@
                                 <TextBlock Text="Chat source:" Width="170" VerticalAlignment="Center" />
                                 <ComboBox Width="160" SelectedItem="{Binding Mode}"
                                           ItemsSource="{x:Static vm:MainViewModel.AllChatModes}" />
-                                <TextBlock Text="   All = merged from every platform below" FontSize="11" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
                             </StackPanel>
+                            <TextBlock Text="All = merged from every platform below" FontSize="11" Foreground="#FF9AA0A8" Margin="170,0,0,2" />
 
                             <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
                                 <TextBlock Text="Twitch channel:" Width="170" VerticalAlignment="Center" />
@@ -318,9 +331,9 @@
                             <StackPanel Orientation="Horizontal" Margin="0,2">
                                 <TextBlock Text="Kick chatroom id (optional):" Width="170" VerticalAlignment="Center" />
                                 <TextBox Width="200" Text="{Binding KickChatroomId}" />
-                                <TextBlock Text="  used only if auto-resolve is blocked" FontSize="11" Foreground="#FF9AA0A8" VerticalAlignment="Center" />
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                            <TextBlock Text="used only if auto-resolve is blocked" FontSize="11" Foreground="#FF9AA0A8" Margin="170,0,0,2" />
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,2">
                                 <TextBlock Text="YouTube URL / @handle:" Width="170" VerticalAlignment="Center" />
                                 <TextBox Width="200" Text="{Binding YouTubeUrl}" />
                             </StackPanel>
@@ -333,17 +346,17 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,2">
                                 <TextBlock Text="Background opacity:" Width="170" VerticalAlignment="Center" />
-                                <Slider Width="220" Minimum="0" Maximum="1" Value="{Binding BackgroundOpacity}" />
+                                <Slider Width="210" Minimum="0" Maximum="1" Value="{Binding BackgroundOpacity}" />
                                 <TextBlock Text="{Binding BackgroundOpacity, StringFormat={}{0:P0}}" Margin="8,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,2">
                                 <TextBlock Text="Font size:" Width="170" VerticalAlignment="Center" />
-                                <Slider Width="220" Minimum="9" Maximum="40" Value="{Binding FontSize}" IsSnapToTickEnabled="True" TickFrequency="1" />
+                                <Slider Width="210" Minimum="9" Maximum="40" Value="{Binding FontSize}" IsSnapToTickEnabled="True" TickFrequency="1" />
                                 <TextBlock Text="{Binding FontSize}" Margin="8,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,2">
                                 <TextBlock Text="Max messages:" Width="170" VerticalAlignment="Center" />
-                                <Slider Width="220" Minimum="5" Maximum="100" Value="{Binding MaxMessages}" IsSnapToTickEnabled="True" TickFrequency="1" />
+                                <Slider Width="210" Minimum="5" Maximum="100" Value="{Binding MaxMessages}" IsSnapToTickEnabled="True" TickFrequency="1" />
                                 <TextBlock Text="{Binding MaxMessages}" Margin="8,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
 

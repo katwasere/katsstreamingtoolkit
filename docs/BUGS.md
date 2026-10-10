@@ -615,3 +615,57 @@ hidden; the ComboBox popup MinWidth RelativeSource binding.
 - **Files**: Chat/ChatHub.cs (ChatEntry).
 - **Fix**: OnMessage/OnStatus snapshot and invoke the subscription lists under
   a gate (try/catch per subscriber); dead events removed.
+
+## BUG-41: Right-click moderation menu never opened on chat TEXT - [FIXED]
+
+- **Found**: 2026-10-10, Kat's verification of the manual-open fix (880971f) -
+  the menu still never appeared when right-clicking actual chat lines.
+- **Root cause**: `OnOverlayRightClick` read the clicked line via
+  `(e.OriginalSource as FrameworkElement)?.DataContext`. A right-click on the
+  words of a chat line hit-tests to the `Run` inside the line's TextBlock -
+  and `Run` is a `FrameworkContentElement`, NOT a `FrameworkElement`, so the
+  cast came back null and the handler silently returned. Only blank padding
+  inside a line resolved to the TextBlock - clicking the text (the normal
+  thing to do) never opened the menu.
+- **Files**: `Views/OverlayWindow.xaml.cs` (OnOverlayRightClick).
+- **Fix**: `FindClickedMessage` walks up from OriginalSource through the
+  content tree (`FrameworkContentElement.Parent` - Run -> TextBlock) and the
+  visual tree until something carries a ChatMessage. Also no more silent
+  failures: right-clicking a real chat line now ALWAYS shows something - the
+  mod menu when applicable, otherwise an explainer ("log in to Twitch ..." /
+  "<platform> moderation isn't wired up yet"). Right-clicking empty space or
+  the header still does nothing by design.
+
+## BUG-42: Chat Overlays tab cut off at the bottom - [FIXED]
+
+- **Found**: 2026-10-10, same verification pass (screenshot).
+- **Symptom**: the tab's left column was a bare StackPanel - the overlays
+  ListBox (which drives the whole "Settings for:" panel) sat below the window
+  edge and was unreachable, and the "Toggle click-through on ALL overlays"
+  button label clipped mid-word at the column edge.
+- **File**: `MainWindow.xaml` (Chat Overlays tab).
+- **Fix**: left column is now a ScrollViewer, reordered for how it is used:
+  Overlays list (with Add/Remove and the click-through toggle, whose label
+  now wraps) on top, then My channels, then the Twitch account setup and
+  chat diagnostics. Nothing can be cut off at any window size.
+
+## BUG-43: Moderation menu opens but is unreadable - [FIXED]
+
+- **Found**: 2026-10-10, Kat's verification of the BUG-41 fix (screenshot:
+  menu items are faint gray on a translucent default chrome).
+- **Root cause**: the app themes every control EXCEPT ContextMenu/MenuItem,
+  so the code-built menu rendered with default bright menu chrome - and the
+  app-wide implicit light TextBlock foreground washed its text out on it.
+- **Files**: `App.xaml` (new ContextMenu + MenuItem templates, same pattern
+  as the BUG-24 ToolTip fix).
+- **Fix**: dark menu template (solid #1F232B panel, border, light text,
+  blue highlight on hover); disabled explainer items dim via Opacity (a
+  Foreground change would lose to the implicit TextBlock style).
+
+Layout round 2 (same verification): the "Settings for:" panel hugged the
+left column with a dead zone to its right on wide windows. Round 3 after
+Kat's feedback: the proportions were still wrong - the channel/account side
+should be the DOMINANT section and "Settings for:" the small one. The grid
+is now: left column = * (fills the window, min 420), right column = fixed
+500 for the compact settings panel; the two long hints moved under their
+rows so nothing clips at 500.
