@@ -42,7 +42,7 @@ public partial class OverlayWindow : Window
         LocationChanged += (_, _) => OnGeometryChanged();
         SizeChanged += (_, _) => OnGeometryChanged();
 
-        ContextMenuOpening += OnContextMenuOpening;
+        MouseRightButtonUp += OnOverlayRightClick;
 
         // Keeps the header status line honest even when nothing changes
         // (client counters move without a status event).
@@ -211,19 +211,23 @@ public partial class OverlayWindow : Window
     }
 
     // Right-click a chat line while the overlay is unlocked: moderation actions
-    // for Twitch lines, when a Twitch account is logged in. Locked overlays are
-    // click-through, so this can only ever happen while unlocked.
-    private void OnContextMenuOpening(object sender, ContextMenuEventArgs e)
+    // for Twitch lines, when a Twitch account is logged in. The menu is opened
+    // MANUALLY on MouseRightButtonUp - the ContextMenuService never raised
+    // ContextMenuOpening on these chromeless windows (it only opens menus it
+    // can already find, and ours is built from the clicked line).
+    private void OnOverlayRightClick(object sender, MouseButtonEventArgs e)
     {
         var msg = (e.OriginalSource as FrameworkElement)?.DataContext as ChatMessage;
         if (msg == null || ChatAuthStore.Twitch == null ||
             !string.Equals(msg.Platform, "Twitch", StringComparison.OrdinalIgnoreCase))
-        {
-            ContextMenu = null;
             return;
-        }
-        if (ContextMenu is not ContextMenu existing || !ReferenceEquals(existing.Tag, msg))
-            ContextMenu = BuildModMenu(msg);
+
+        var menu = BuildModMenu(msg);
+        if (menu == null) return;
+        e.Handled = true;
+        menu.PlacementTarget = Scroller;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen = true;
     }
 
     private ContextMenu? BuildModMenu(ChatMessage msg)

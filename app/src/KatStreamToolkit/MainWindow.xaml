@@ -271,7 +271,8 @@
                         </StackPanel>
                         <TextBlock Text="{Binding TwitchAccountText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding TwitchLoginStatus, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,0" />
-                        <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode. 'missing client secret' on login means: set the app's Client Type to Public, or paste its Client Secret above." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
+                        <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode. 'missing client secret' on login means: set the app's Client Type to Public, or paste its Client Secret above." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,4" />
+                        <TextBlock Text="Tip: replies are sent from whichever account is logged in here. For a true bot identity, create a separate Twitch account, mod it in your channel, and log in with that one." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,10" />
 
                         <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,6" />
                         <Button Content="Sync overlays from My channels" Command="{Binding SyncOverlaysFromMyChannelsCommand}"
