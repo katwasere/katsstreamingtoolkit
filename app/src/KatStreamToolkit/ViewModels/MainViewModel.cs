@@ -59,6 +59,13 @@ public class MainViewModel : ObservableBase
 
     public string NginxPreview { get => _nginxPreview; private set => Set(ref _nginxPreview, value); }
 
+    // Non-empty when the toolkit's generated relay config no longer matches
+    // what the last successful deploy shipped (rotated keys, edited URLs,
+    // changed destinations...). Keys and destinations only reach the VPS on
+    // redeploy - this is the local, no-round-trip version of the server-side
+    // OUTDATED check.
+    public string ServerConfigOutdatedText { get; private set; } = "";
+
     // The exact nginx.conf lines the selected destination contributes (Output Studio preview).
     public string SelectedCommandPreview { get; private set; } = "";
 
@@ -886,6 +893,7 @@ public class MainViewModel : ObservableBase
         _secrets = LoadSecrets();
         SecretsStore.Apply(Config, _secrets);
         SyncEulerKey();
+        SyncChannelSnapshot();
 
         // Attach/detach destination handlers ONLY here (CollectionChanged owns the
         // lifetime) - the old ctor pre-attach loop double-subscribed everything.
@@ -916,6 +924,7 @@ public class MainViewModel : ObservableBase
         Config.Upstream.PropertyChanged += (_, _) => Refresh();
         Config.MyChannels.PropertyChanged += (_, _) =>
         {
+            PropagateMyChannelsToOverlays();
             ScheduleSave();
             _commandRunner?.SyncSources();
         };
@@ -961,6 +970,7 @@ public class MainViewModel : ObservableBase
         DeployCommand = new RelayCommand(_ => RunBackground(log =>
         {
             DeployService.Deploy(Config, BuildTarget(), log);
+            RecordDeployedConfig();
             log("checking relay status...");
             RelayStatusText = DeployService.FetchStatus(BuildTarget(), Config);
             Raise(nameof(RelayStatusText));
@@ -1396,6 +1406,87 @@ public class MainViewModel : ObservableBase
             ? ""
             : RelayConfigGenerator.DescribeDestination(Config, SelectedDestination, ShowSecretsInPreview);
         Raise(nameof(SelectedCommandPreview));
+        UpdateDeployStaleness();
         ScheduleSave();
+    }
+
+    private void UpdateDeployStaleness()
+    {
+        string stored = _secrets.LastDeployedNginxHash;
+        ServerConfigOutdatedText = stored.Length == 0
+            ? "" // never deployed from a build that records this - stay quiet
+            : ServerExporter.ComputeNginxConfigHash(Config).Equals(stored, StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : $"the server still runs the config from {LastDeployedDisplay} - rotated keys and destination changes only go live after 'Deploy to server'";
+        Raise(nameof(ServerConfigOutdatedText));
+    }
+
+    private string LastDeployedDisplay => _secrets.LastDeployedAtUtc == default
+        ? "an older deploy"
+        : _secrets.LastDeployedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+
+    private void RecordDeployedConfig()
+    {
+        _secrets.LastDeployedNginxHash = ServerExporter.ComputeNginxConfigHash(Config);
+        _secrets.LastDeployedAtUtc = DateTime.UtcNow;
+        Save();
+        UpdateDeployStaleness();
+    }
+
+    // ---------- "My channels" -> overlay propagation ----------
+
+    // Last-seen "My channels" values. When one changes, overlays that still
+    // carry the OLD value (pre-filled and never individually edited) follow
+    // to the new one - otherwise a rotated channel leaves every existing
+    // overlay (and the command runner) connected to the dead channel.
+    private readonly string[] _syncedChannels = new string[4];
+
+    private void SyncChannelSnapshot()
+    {
+        var mc = Config.MyChannels;
+        _syncedChannels[0] = mc.TwitchChannel;
+        _syncedChannels[1] = mc.KickChannel;
+        _syncedChannels[2] = mc.YouTubeUrl;
+        _syncedChannels[3] = mc.TikTokHandle;
+    }
+
+    private void PropagateMyChannelsToOverlays()
+    {
+        var mc = Config.MyChannels;
+        string[] current = { mc.TwitchChannel, mc.KickChannel, mc.YouTubeUrl, mc.TikTokHandle };
+        try
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                if (current[i] == _syncedChannels[i]) continue;
+                foreach (var o in Overlays)
+                {
+                    string overlayValue = i switch
+                    {
+                        0 => o.TwitchChannel,
+                        1 => o.KickChannel,
+                        2 => o.YouTubeUrl,
+                        _ => o.TikTokHandle,
+                    };
+                    // Only follow overlays that still carry the previous value;
+                    // one pointed at a different channel on purpose stays put.
+                    if (overlayValue != _syncedChannels[i]) continue;
+                    switch (i)
+                    {
+                        case 0: o.TwitchChannel = current[i]; break;
+                        case 1: o.KickChannel = current[i]; break;
+                        case 2: o.YouTubeUrl = current[i]; break;
+                        default: o.TikTokHandle = current[i]; break;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _syncedChannels[0] = current[0];
+            _syncedChannels[1] = current[1];
+            _syncedChannels[2] = current[2];
+            _syncedChannels[3] = current[3];
+        }
     }
 }

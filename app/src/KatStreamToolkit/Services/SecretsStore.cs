@@ -26,6 +26,13 @@ public class SecretsData
     public DateTime TwitchTokenExpiresUtc { get; set; }
     public string TwitchLogin { get; set; } = "";
     public string TwitchUserId { get; set; } = "";
+
+    // Hash of the nginx config the last successful deploy shipped. Compared
+    // against what the app generates NOW, locally, so the toolkit can say
+    // "the server still runs the old config - redeploy" the moment a key or
+    // destination setting changes, without a server round trip.
+    public string LastDeployedNginxHash { get; set; } = "";
+    public DateTime LastDeployedAtUtc { get; set; }
 }
 
 public static class SecretsStore
@@ -103,6 +110,8 @@ public static class SecretsStore
             data.TwitchTokenExpiresUtc = previous.TwitchTokenExpiresUtc;
             data.TwitchLogin = previous.TwitchLogin;
             data.TwitchUserId = previous.TwitchUserId;
+            data.LastDeployedNginxHash = previous.LastDeployedNginxHash;
+            data.LastDeployedAtUtc = previous.LastDeployedAtUtc;
         }
         Save(path, data);
     }
