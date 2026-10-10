@@ -15,7 +15,9 @@ public partial class OverlayWindow : Window
     private readonly ObservableCollection<ChatMessage> _lines = new();
     private readonly List<IDisposable> _subscriptions = new();
     private readonly List<string> _sourceKeys = new();
+    private readonly List<ChatEntry> _entries = new();
     private readonly DispatcherTimer _saveDebounce;
+    private readonly DispatcherTimer _statusTimer;
     private bool _atBottom = true;
 
     public OverlayWindow(OverlayConfig config)
@@ -42,6 +44,12 @@ public partial class OverlayWindow : Window
 
         ChatAuthStore.TwitchChanged += OnTwitchAuthChanged;
         ContextMenuOpening += OnContextMenuOpening;
+
+        // Keeps the header status line honest even when nothing changes
+        // (client counters move without a status event).
+        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _statusTimer.Tick += (_, _) => RenderStatus();
+        _statusTimer.Start();
 
         Closed += (_, _) =>
         {
@@ -134,6 +142,7 @@ public partial class OverlayWindow : Window
         {
             var entry = ChatHub.Acquire(spec);
             _sourceKeys.Add(spec.Key);
+            _entries.Add(entry);
             _subscriptions.Add(entry.Subscribe(
                 msg => Dispatcher.BeginInvoke(() => AppendMessage(msg)),
                 status => Dispatcher.BeginInvoke(() => UpdateStatus(generation, spec.Platform, status))));
@@ -147,6 +156,7 @@ public partial class OverlayWindow : Window
         _subscriptions.Clear();
         foreach (var key in _sourceKeys) ChatHub.Release(key);
         _sourceKeys.Clear();
+        _entries.Clear();
         _statuses.Clear();
         _lineCounts.Clear();
     }
@@ -177,13 +187,22 @@ public partial class OverlayWindow : Window
         RenderStatus();
     }
 
-    // Header status with a per-platform line counter - "connected (4 msgs)"
-    // proves messages actually ARRIVE, separating delivery from rendering.
+    // Header status with live counters - "raw" lines straight off the wire vs
+    // "in" parsed chat messages vs "shown" rendered lines (incl. test lines).
+    // raw climbing + in stuck = the app drops messages (my bug);
+    // raw stuck = the connection receives nothing (network/platform side).
     private void RenderStatus()
     {
-        var parts = _statuses.Select(kv => _lineCounts.TryGetValue(kv.Key, out int n) && n > 0
-            ? $"{kv.Key}: {kv.Value} ({n} lines)"
-            : $"{kv.Key}: {kv.Value}");
+        var parts = _statuses.Select(kv =>
+        {
+            string s = kv.Value;
+            var entry = _entries.FirstOrDefault(e => e.Client.PlatformName == kv.Key);
+            if (entry?.Client is IChatStats st)
+                s += $" - raw {st.RawLines}, in {st.ChatMessages}";
+            if (_lineCounts.TryGetValue(kv.Key, out int shown) && shown > 0)
+                s += $", shown {shown}";
+            return $"{kv.Key}: {s}";
+        });
         StatusText.Text = string.Join("  |  ", parts);
     }
 

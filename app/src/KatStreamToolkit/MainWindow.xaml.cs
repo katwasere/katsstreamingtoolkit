@@ -16,6 +16,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _vm = (MainViewModel)DataContext;
+        // Build stamp in the title: a screenshot of this window always shows
+        // exactly which build is running - stale binaries caused real
+        // confusion during debugging.
+        Title += $"  -  build {File.GetLastWriteTime(GetType().Assembly.Location):yyyy-MM-dd HH:mm}";
         Loaded += OnLoaded;
         Closed += (_, _) =>
         {

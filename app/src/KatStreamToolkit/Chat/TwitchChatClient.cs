@@ -41,6 +41,11 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
 
     public bool CanSend => _login != null && _accessToken != null;
 
+    private int _rawLines;
+    private int _msgCount;
+    public int RawLines => _rawLines;
+    public int ChatMessages => _msgCount;
+
     public void Start()
     {
         _cts = new CancellationTokenSource();
@@ -87,6 +92,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
                         while ((line = await reader.ReadLineAsync(ct)) != null)
                         {
                             _lastLineUtc = DateTime.UtcNow;
+                            Interlocked.Increment(ref _rawLines);
                             if (line.StartsWith("PING"))
                             {
                                 await writer.WriteLineAsync("PONG :tmi.twitch.tv");
@@ -284,6 +290,8 @@ public sealed class TwitchChatClient : IChatClient, IChatSender
             isAction = true;
             text = text["\u0001ACTION ".Length..^1];
         }
+
+        Interlocked.Increment(ref _msgCount);
 
         MessageReceived?.Invoke(new ChatMessage
         {
