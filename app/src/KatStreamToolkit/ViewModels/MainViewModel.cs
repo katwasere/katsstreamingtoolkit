@@ -130,6 +130,7 @@ public class MainViewModel : ObservableBase
     public ICommand RemoveCommandCommand { get; }
     public ICommand TestOverlayMessagesCommand { get; }
     public ICommand SyncOverlaysFromMyChannelsCommand { get; }
+    public ICommand CaptureChatDiagnosticsCommand { get; }
 
     private void SetTwitchLoginStatus(string text)
     {
@@ -269,10 +270,47 @@ public class MainViewModel : ObservableBase
             _commandRunner?.SyncSources();
     }
 
-    // One-click catch-up: point EVERY overlay at the current "My channels"
-    // values (used when overlays were left on a channel that has since been
+    // One-click catch-up: point EVERY overlay at the current "My channels"    // values (used when overlays were left on a channel that has since been
     // rotated). Manual Kick chatroom ids are per-channel, so they are cleared
     // and re-resolved for the new channel.
+    // Raw Twitch IRC capture for diagnosing "connected but no messages": a
+    // throwaway anonymous connection records every wire line for 15 seconds.
+    private int _diagBusy;
+
+    private void CaptureChatDiagnostics()
+    {
+        if (Interlocked.CompareExchange(ref _diagBusy, 1, 0) != 0) return;
+        string channel = (SelectedOverlay?.TwitchChannel is { Length: > 0 } c ? c : null)
+                         ?? Config.MyChannels.TwitchChannel;
+        if (string.IsNullOrWhiteSpace(channel))
+        {
+            MessageBox.Show("set a Twitch channel first (My channels, or the selected overlay)",
+                "Chat diagnostics", MessageBoxButton.OK, MessageBoxImage.Information);
+            Interlocked.Exchange(ref _diagBusy, 0);
+            return;
+        }
+        Task.Run(async () =>
+        {
+            try
+            {
+                string transcript = await ChatDiagnostics.CaptureTwitchAsync(
+                    channel, TimeSpan.FromSeconds(15), CancellationToken.None);
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                    new Views.ChatDiagnosticsWindow { Transcript = transcript }.Show());
+            }
+            catch (Exception ex)
+            {
+                Application.Current?.Dispatcher.BeginInvoke(() =>
+                    MessageBox.Show($"diagnostic capture failed: {ex.Message}",
+                        "Chat diagnostics", MessageBoxButton.OK, MessageBoxImage.Warning));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _diagBusy, 0);
+            }
+        });
+    }
+
     private void SyncOverlaysFromMyChannels()
     {
         var mc = Config.MyChannels;
@@ -1021,6 +1059,7 @@ public class MainViewModel : ObservableBase
             if (SelectedOverlay != null) OverlayTestMessages?.Invoke(SelectedOverlay);
         }, _ => SelectedOverlay != null);
         SyncOverlaysFromMyChannelsCommand = new RelayCommand(_ => SyncOverlaysFromMyChannels(), _ => Overlays.Count > 0);
+        CaptureChatDiagnosticsCommand = new RelayCommand(_ => CaptureChatDiagnostics());
         EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);

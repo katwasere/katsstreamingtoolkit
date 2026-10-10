@@ -276,6 +276,10 @@
                                 Padding="10,3" HorizontalAlignment="Left" />
                         <TextBlock Text="Points every overlay at the channels above (for after rotating channels) and reconnects them." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
 
+                        <Button Content="Chat diagnostics (raw IRC)..." Command="{Binding CaptureChatDiagnosticsCommand}"
+                                Padding="10,3" HorizontalAlignment="Left" />
+                        <TextBlock Text="Connects a throwaway reader to your Twitch channel for 15 seconds and shows every raw line. Type in your chat while it runs - if PRIVMSG lines appear here but not in the overlay, the problem is rendering; if not, the problem is delivery." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
+
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
                             <Button Content="Remove" Command="{Binding RemoveOverlayCommand}" Margin="6,0,0,0" Padding="10,3" />

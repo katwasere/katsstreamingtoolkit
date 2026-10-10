@@ -1,0 +1,17 @@
+<Window x:Class="KatStreamToolkit.Views.ChatDiagnosticsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Chat diagnostics - raw Twitch IRC" Width="820" Height="580"
+        Background="#FF16181D" Foreground="#FFE6E8EB" WindowStartupLocation="CenterScreen">
+    <DockPanel Margin="8">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Content="Copy all" Click="Copy_Click" Padding="10,3" />
+            <Button Content="Close" Click="Close_Click" Margin="6,0,0,0" Padding="10,3" />
+            <TextBlock Text="type in your Twitch chat while this runs - PRIVMSG lines here are what the toolkit can possibly show"
+                       Foreground="#FF9AA0A8" VerticalAlignment="Center" Margin="12,0,0,0" FontSize="11" />
+        </StackPanel>
+        <TextBox x:Name="TranscriptBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
+                 Background="#FF1B1E24" Foreground="#FFD8DEE9"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" />
+    </DockPanel>
+</Window>
