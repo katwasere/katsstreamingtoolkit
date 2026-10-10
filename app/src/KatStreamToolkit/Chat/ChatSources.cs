@@ -10,10 +10,10 @@ public static class ChatSources
         var ch = channel.Trim().TrimStart('#').ToLowerInvariant();
         return new ChatSourceSpec("Twitch", $"twitch:{ch}", () =>
         {
-            // Authenticated when a Twitch account is logged in (send + badges
-            // work); anonymous justinfan otherwise - same as always.
-            var auth = ChatAuthStore.Twitch;
-            return new TwitchChatClient(ch, auth?.Login, auth?.AccessToken);
+            // The client resolves auth from ChatAuthStore at every connect, so
+            // logging in / token refresh upgrades existing connections on their
+            // own reconnect - no entry rebuild needed.
+            return new TwitchChatClient(ch);
         });
     }
 

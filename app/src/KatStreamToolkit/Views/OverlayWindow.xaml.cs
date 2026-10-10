@@ -42,7 +42,6 @@ public partial class OverlayWindow : Window
         LocationChanged += (_, _) => OnGeometryChanged();
         SizeChanged += (_, _) => OnGeometryChanged();
 
-        ChatAuthStore.TwitchChanged += OnTwitchAuthChanged;
         ContextMenuOpening += OnContextMenuOpening;
 
         // Keeps the header status line honest even when nothing changes
@@ -55,7 +54,6 @@ public partial class OverlayWindow : Window
         {
             PersistGeometry();
             ReleaseSources();
-            ChatAuthStore.TwitchChanged -= OnTwitchAuthChanged;
         };
         Loaded += (_, _) => ApplyLockStyle();
 
@@ -69,12 +67,6 @@ public partial class OverlayWindow : Window
             Hide();
 
         StartSources();
-    }
-
-    private void OnTwitchAuthChanged()
-    {
-        // Token refreshes raise this off the UI thread.
-        Dispatcher.BeginInvoke(RestartSources);
     }
 
     private void OnGeometryChanged()

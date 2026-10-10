@@ -55,7 +55,7 @@
                     </ItemsControl>
                 </ScrollViewer>
 
-                <TextBlock Grid.Row="2" Text="locked - Ctrl+Alt+C to unlock overlays"
+                <TextBlock Grid.Row="2" Text="locked - Ctrl+Alt+C (or X) to unlock overlays"
                            FontSize="9" Foreground="#66FFFFFF" Margin="10,0,10,3" TextAlignment="Right"
                            Visibility="{Binding Locked, Converter={StaticResource BoolToVis}}" />
             </Grid>

@@ -286,8 +286,11 @@
                             <Button Content="Add overlay" Command="{Binding AddOverlayCommand}" Padding="10,3" />
                             <Button Content="Remove" Command="{Binding RemoveOverlayCommand}" Margin="6,0,0,0" Padding="10,3" />
                         </StackPanel>
+                        <Button Content="Toggle click-through on ALL overlays (Ctrl+Alt+C / X)" Command="{Binding ToggleOverlaysLockCommand}"
+                                Padding="10,3" HorizontalAlignment="Left" Margin="0,8,0,0" />
+                        <TextBlock Text="Use this in-game: unlocked overlays accept mouse clicks (moderation!), locked ones pass clicks through to your game. Works from fullscreen." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,6" />
                         <ListBox ItemsSource="{Binding Overlays}" SelectedItem="{Binding SelectedOverlay}"
-                                 MinHeight="220" Margin="0,8,0,0" DisplayMemberPath="Name" />
+                                 MinHeight="220" Margin="0,0,0,0" DisplayMemberPath="Name" />
                     </StackPanel>
 
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">

@@ -5,18 +5,22 @@ using System.Text;
 
 namespace KatStreamToolkit.Chat;
 
-// Twitch IRC. Anonymous (justinfan) read-only by default; with a login+token it
-// connects authenticated, joins with the account's permissions and gains the
-// ability to SEND messages (the foundation for !command replies).
+// Twitch IRC. Reads the account auth from ChatAuthStore at CONNECT time (not
+// construction), so logging in or a token refresh upgrades every existing
+// connection on its next reconnect - the client also reconnects itself the
+// moment the auth changes. Anonymous (justinfan) when nobody is logged in.
 public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
 {
     private const string Host = "irc.chat.twitch.tv";
     private const int Port = 6697;
 
     private readonly string _channel;
-    private readonly string? _login;
-    private readonly string? _accessToken;
     private CancellationTokenSource? _cts;
+    private TcpClient? _currentTcp;
+
+    // Per-connection-attempt auth snapshot; CanSend reflects the live session.
+    private string? _activeLogin;
+    private string? _activeToken;
 
     // Live only while the read loop is inside a connected session; the send
     // path takes the gate so a write can never race the writer's disposal.
@@ -32,14 +36,19 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
     public event Action<ChatMessage>? MessageReceived;
     public event Action<string>? StatusChanged;
 
-    public TwitchChatClient(string channel, string? login = null, string? accessToken = null)
+    public TwitchChatClient(string channel)
     {
         _channel = channel.TrimStart('#').ToLowerInvariant();
-        _login = string.IsNullOrWhiteSpace(login) ? null : login.Trim();
-        _accessToken = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken.Trim();
+        ChatAuthStore.TwitchChanged += OnAuthChanged;
     }
 
-    public bool CanSend => _login != null && _accessToken != null;
+    private void OnAuthChanged()
+    {
+        // Kill the live socket; the run loop reconnects with the fresh auth.
+        try { _currentTcp?.Close(); } catch { }
+    }
+
+    public bool CanSend => _activeLogin != null && _activeToken != null;
 
     private int _rawLines;
     private int _msgCount;
@@ -57,7 +66,6 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
     private async void Run(CancellationTokenSource cts)
     {
         CancellationToken ct = cts.Token;
-        string nick = _login ?? $"justinfan{Random.Shared.Next(10000, 99999)}";
         var backoff = TimeSpan.FromSeconds(3);
         try
         {
@@ -67,7 +75,17 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                 try
                 {
                     StatusChanged?.Invoke("connecting...");
+
+                    // Auth is resolved PER ATTEMPT: a login (or token refresh)
+                    // that happens while this client is alive takes effect on
+                    // the very next reconnect.
+                    var auth = ChatAuthStore.Twitch;
+                    _activeLogin = auth?.Login;
+                    _activeToken = auth?.AccessToken;
+                    string nick = _activeLogin ?? $"justinfan{Random.Shared.Next(10000, 99999)}";
+
                     using var tcp = new TcpClient();
+                    _currentTcp = tcp;
                     using var closeOnCancel = ct.Register(() => tcp.Close());
                     await tcp.ConnectAsync(Host, Port, ct);
                     await using var ssl = new SslStream(tcp.GetStream());
@@ -78,8 +96,8 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                     // Same handshake order as the diagnostics capture (and the
                     // Twitch docs): capabilities first, then auth/nick/join.
                     await writer.WriteLineAsync("CAP REQ :twitch.tv/tags twitch.tv/commands");
-                    if (_accessToken != null)
-                        await writer.WriteLineAsync($"PASS oauth:{_accessToken}");
+                    if (_activeToken != null)
+                        await writer.WriteLineAsync($"PASS oauth:{_activeToken}");
                     await writer.WriteLineAsync($"NICK {nick}");
                     await writer.WriteLineAsync($"JOIN #{_channel}");
 
@@ -106,7 +124,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                                 // so sends never race the join.
                                 await _sendGate.WaitAsync(ct);
                                 try { _writer = writer; } finally { _sendGate.Release(); }
-                                StatusChanged?.Invoke(_accessToken != null ? "connected (logged in)" : "connected");
+                                StatusChanged?.Invoke(_activeToken != null ? "connected (logged in)" : "connected");
                             }
                             if (line.Contains("RECONNECT"))
                                 throw new IOException("server requested reconnect");
@@ -136,13 +154,16 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                 {
                     // Take the writer back out under the send gate, THEN dispose -
                     // a concurrent TrySendAsync can never write to a dead stream.
+                    // CanSend flips back to false with the session gone.
                     try
                     {
                         await _sendGate.WaitAsync(CancellationToken.None);
-                        try { _writer = null; } finally { _sendGate.Release(); }
+                        try { _writer = null; _activeLogin = null; _activeToken = null; }
+                        finally { _sendGate.Release(); }
                     }
                     catch { }
                     try { writer?.Dispose(); } catch { }
+                    _currentTcp = null;
                 }
                 try { await Task.Delay(backoff, ct); } catch (OperationCanceledException) { return; }
             }
@@ -334,11 +355,10 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
 
     public void Dispose()
     {
-        // Cancel only: the CTS is disposed by the Run loop when it unwinds (see
-        // the finally in Run), so a mid-reconnect Task.Delay can never observe a
-        // disposed token.
+        ChatAuthStore.TwitchChanged -= OnAuthChanged;
         var cts = _cts;
         _cts = null;
         try { cts?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _currentTcp?.Close(); } catch { }
     }
 }

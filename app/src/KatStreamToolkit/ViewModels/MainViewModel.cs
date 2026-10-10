@@ -143,6 +143,7 @@ public class MainViewModel : ObservableBase
     public ICommand TestOverlayMessagesCommand { get; }
     public ICommand SyncOverlaysFromMyChannelsCommand { get; }
     public ICommand CaptureChatDiagnosticsCommand { get; }
+    public ICommand ToggleOverlaysLockCommand { get; }
 
     private void SetTwitchLoginStatus(string text)
     {
@@ -1073,6 +1074,11 @@ public class MainViewModel : ObservableBase
         }, _ => SelectedOverlay != null);
         SyncOverlaysFromMyChannelsCommand = new RelayCommand(_ => SyncOverlaysFromMyChannels(), _ => Overlays.Count > 0);
         CaptureChatDiagnosticsCommand = new RelayCommand(_ => CaptureChatDiagnostics());
+        ToggleOverlaysLockCommand = new RelayCommand(_ =>
+        {
+            foreach (var o in Overlays)
+                ToggleOverlayLock(o);
+        }, _ => Overlays.Count > 0);
         EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);

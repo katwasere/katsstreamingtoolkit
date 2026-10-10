@@ -92,16 +92,20 @@ public partial class MainWindow : Window
         var hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
         const uint MOD_ALT = 0x1, MOD_CONTROL = 0x2;
-        // If another app already owns Ctrl+Alt+C the registration silently failed
-        // and the lock hotkey did nothing - say so instead.
-        if (!RegisterHotKey(hwnd, HotkeyId, MOD_CONTROL | MOD_ALT, 0x43))
-            Title += "  (Ctrl+Alt+C is taken by another app - the overlay lock hotkey is off)";
+        // Two aliases so one colliding app cannot silently kill the toggle:
+        // whichever registers works, both toggle all overlays.
+        bool c = RegisterHotKey(hwnd, HotkeyId, MOD_CONTROL | MOD_ALT, 0x43);
+        bool x = RegisterHotKey(hwnd, HotkeyIdAlias, MOD_CONTROL | MOD_ALT, 0x58);
+        if (!c && !x)
+            Title += "  (both Ctrl+Alt+C and Ctrl+Alt+X are taken - the overlay lock hotkey is off)";
+        else if (!c)
+            Title += "  (Ctrl+Alt+C is taken - use Ctrl+Alt+X to lock/unlock overlays)";
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         const int WM_HOTKEY = 0x0312;
-        if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyId)
+        if (msg == WM_HOTKEY && (wParam.ToInt32() == HotkeyId || wParam.ToInt32() == HotkeyIdAlias))
         {
             ToggleAllLocks();
             handled = true;
@@ -110,6 +114,7 @@ public partial class MainWindow : Window
     }
 
     private const int HotkeyId = 0xCA7;
+    private const int HotkeyIdAlias = 0xCA8;
 
     protected override void OnClosed(EventArgs e)
     {
