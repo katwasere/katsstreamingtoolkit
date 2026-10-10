@@ -173,6 +173,14 @@ Standing decisions for everything in this phase (from Kats):
 - **OBS & local tooling** - OBS profile generator (importable server/key/output
   settings), layout profiles, profile import/export (encrypted zip), tray integration,
   auto-update channel, portable single-file build.
+- **Server-side !command bot (kat-bot, Nightbot-style)** - a small optional
+  service added to the server bundle: a second container on the VPS that holds
+  the Twitch IRC connection (using a bot OAuth token handed over at deploy,
+  refreshed server-side), reads a commands JSON the toolkit generates and
+  deploys, and replies straight from the server - millisecond latency, no home
+  round trip, and it keeps working when your PC or home connection drops. The
+  toolkit-side runner stays as the offline/testing fallback; moderation and
+  OBS scene actions still run locally (the VPS has no obs-websocket).
 - **Chat extras** - TTS of chat messages (per-platform flags, rate limiter); overlay
   themes + keyword highlights (bubble style, per-platform filters).
 - **External watchdog notifications** - beyond the shipped toolkit watchdog's banner
