@@ -148,6 +148,7 @@ public partial class OverlayWindow : Window
         foreach (var key in _sourceKeys) ChatHub.Release(key);
         _sourceKeys.Clear();
         _statuses.Clear();
+        _lineCounts.Clear();
     }
 
     private static List<ChatSourceSpec> BuildSpecs(OverlayConfig cfg)
@@ -167,12 +168,22 @@ public partial class OverlayWindow : Window
     }
 
     private readonly Dictionary<string, string> _statuses = new();
+    private readonly Dictionary<string, int> _lineCounts = new();
 
     private void UpdateStatus(int generation, string platform, string status)
     {
         if (generation != _sourceGeneration) return;
         _statuses[platform] = status;
-        var parts = _statuses.Select(kv => $"{kv.Key}: {kv.Value}");
+        RenderStatus();
+    }
+
+    // Header status with a per-platform line counter - "connected (4 msgs)"
+    // proves messages actually ARRIVE, separating delivery from rendering.
+    private void RenderStatus()
+    {
+        var parts = _statuses.Select(kv => _lineCounts.TryGetValue(kv.Key, out int n) && n > 0
+            ? $"{kv.Key}: {kv.Value} ({n} lines)"
+            : $"{kv.Key}: {kv.Value}");
         StatusText.Text = string.Join("  |  ", parts);
     }
 
@@ -180,6 +191,8 @@ public partial class OverlayWindow : Window
     {
         _atBottom = Scroller.VerticalOffset + Scroller.ViewportHeight >= Scroller.ExtentHeight - 30;
         _lines.Add(msg);
+        _lineCounts[msg.Platform] = _lineCounts.GetValueOrDefault(msg.Platform) + 1;
+        RenderStatus();
         while (_lines.Count > _config.MaxMessages)
             _lines.RemoveAt(0);
         if (_atBottom)
