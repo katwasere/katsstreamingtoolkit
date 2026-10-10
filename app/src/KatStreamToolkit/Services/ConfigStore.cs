@@ -42,6 +42,7 @@ public static class ConfigStore
                     continue;
                 cfg.Destinations ??= new List<DestinationConfig>();
                 cfg.Overlays ??= new List<OverlayConfig>();
+                cfg.Commands ??= new List<CommandConfig>();
                 cfg.Upstream ??= new UpstreamConfig();
                 cfg.MyChannels ??= new MyChannelsConfig();
                 ClearKnownDeadDefaultIngest(cfg);

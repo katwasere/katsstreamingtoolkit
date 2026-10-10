@@ -48,9 +48,10 @@ Idea write-ups and Kats ratings (10 = add to roadmap) live in
   auto-killed (default on, toggle in the banner) so nginx respawns a fresh one;
   per-alarm "restart encoder" buttons and a "Restart relay" button sit right in the
   banner, with an optional alarm sound. Per-destination push lights are now honest
-  (routed destinations report their own encoder state instead of copying the global
-  relay state). The "post a notice into the affected platform's chat" half waits for
-  the chat-send/OAuth subsystem from the moderation work.
+  (routed   destinations report their own encoder state instead of copying the global
+  relay state). The "post a notice into the affected platform's chat" half can
+  now build on the Twitch chat-send from the moderation work (Kick/YouTube
+  wait for their OAuth logins).
 - **Go-live orchestration (one-button Start/End stream)** - a new obs-websocket 5.x
   client (`Services/ObsWebSocketClient.cs`: challenge/salt auth, request/response
   RPC, StreamStateChanged events, scene requests ready for later hooks) powers a
@@ -61,6 +62,20 @@ Idea write-ups and Kats ratings (10 = add to roadmap) live in
   connection shows its own status light. Without OBS control the buttons still
   verify relay + arrival, so they work for everyone. Scene changes on chat events
   remain in the queue under "OBS auto-switching"; second-PC OBS stays post-release.
+- **Moderation + command runner (Twitch first)** - the toolkit now has the
+  OAuth + chat-send foundation everything in phase two leans on. A Twitch
+  account login (authorization code + PKCE, loopback redirect on port 8770,
+  tokens in secrets.json, automatic refresh) turns the Twitch chat connection
+  authenticated: it gains the `IChatSender` capability and richer message tags
+  (msg id, user id, badges). On top of that: right-click a chat line in an
+  unlocked overlay for timeout (10m/1h), ban and delete-message (Helix API,
+  slow-mode endpoint wired but awaiting a UI toggle), modded/broadcaster lines
+  are protected, and a `!commands` runner (new Commands tab) replies in chat
+  and/or flips an OBS scene, with per-command cooldown, watching every
+  configured channel through the shared ChatHub connections. Kick and YouTube
+  stay read-only until their own OAuth work (their connectors report "cannot
+  send"); TikTok chat is on hold. One-time setup: create a Twitch application
+  in the dev console (redirect `http://localhost:8770/`) and paste its Client ID.
 
 ## On hold - TikTok chat connector (DELAYED UNTIL FURTHER NOTICE)
 
@@ -88,13 +103,15 @@ Standing decisions for everything in this phase (from Kats):
 
 ### Chat & overlays
 
-- **Moderation + command runner** - timeout/ban/delete buttons on overlay chat lines
-  (mod-authed Twitch/Kick/YouTube calls), shared filter lists, slow-mode toggles, and
-  `!commands` handled by the toolkit: reply in chat, trigger overlay effects, flip OBS
-  scenes. (Kats: planned now that phase one is done.)
+- **Moderation leftovers** - shared filter lists, a slow-mode UI toggle (the
+  Helix endpoint is already wired in `ModerationService`), and Kick/YouTube
+  OAuth logins so timeout/ban/delete and chat replies work on those platforms
+  too (the capability interfaces are in place; only the per-platform logins
+  and API calls are missing). The Twitch first half is shipped (see Shipped).
 - **Alert overlays** - follows / subs / raids / likes rendered as animated overlay
   elements next to the chat lines (Twitch EventSub + Kick + YouTube equivalents; the
-  overlay window already exists).
+  overlay window already exists, and the Twitch OAuth from the moderation work
+  carries the EventSub socket).
 - **Polls / predictions widget** - poll state fetched from the platform APIs and
   rendered as an overlay element.
 
@@ -121,9 +138,9 @@ Standing decisions for everything in this phase (from Kats):
 - **Key rotation reminders** - destinations record when their stream key was last
   rotated; the toolkit nags on a configurable interval (keys leak via screenshots).
 - **OBS auto-switching via the shipped obs-websocket link** - the transport is live
-  (see go-live orchestration in Shipped); remaining work: scene changes on chat
-  events (raids, follows) and automatic portrait-scene handling, hooking the
-  moderation/alerts work.
+  (see go-live orchestration in Shipped), and `!commands` can already flip scenes
+  (Commands tab); remaining work: automatic scene changes on chat events (raids,
+  follows) and automatic portrait-scene handling, hooking the alert overlays work.
 - **Per-platform status board** - the phase-one live checks extended into a grid:
   relay-side health + platform-side "actually live" + viewer counts where an API
   provides them, per destination, in one board.
@@ -160,7 +177,8 @@ Standing decisions for everything in this phase (from Kats):
   themes + keyword highlights (bubble style, per-platform filters).
 - **External watchdog notifications** - beyond the shipped toolkit watchdog's banner
   and auto-restart: Discord webhook, Telegram bot, ntfy push, and posting a notice
-  into the affected destination's platform chat (needs the chat-send/OAuth subsystem).
+  into the affected destination's platform chat (Twitch send is live; Kick/YouTube
+  need their OAuth logins).
 - **Local relay mode** - same nginx/ffmpeg stack via Docker Desktop or WSL2 for people
   with strong upload; deploy becomes "choose target: VPS or this PC".
 

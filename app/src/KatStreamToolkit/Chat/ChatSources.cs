@@ -1,0 +1,41 @@
+namespace KatStreamToolkit.Chat;
+
+// Single place that maps channels to chat source specs, so overlays and the
+// command runner create identical (and auth-aware) clients instead of each
+// hand-rolling the factories.
+public static class ChatSources
+{
+    public static ChatSourceSpec Twitch(string channel)
+    {
+        var ch = channel.Trim().TrimStart('#').ToLowerInvariant();
+        return new ChatSourceSpec("Twitch", $"twitch:{ch}", () =>
+        {
+            // Authenticated when a Twitch account is logged in (send + badges
+            // work); anonymous justinfan otherwise - same as always.
+            var auth = ChatAuthStore.Twitch;
+            return new TwitchChatClient(ch, auth?.Login, auth?.AccessToken);
+        });
+    }
+
+    public static ChatSourceSpec Kick(string channel, string? manualChatroomId)
+    {
+        var ch = channel.Trim().TrimStart('/').ToLowerInvariant();
+        var manual = string.IsNullOrWhiteSpace(manualChatroomId) ? null : manualChatroomId.Trim();
+        return new ChatSourceSpec("Kick", $"kick:{manual ?? ch}",
+            () => new KickChatClient(ch, manual));
+    }
+
+    public static ChatSourceSpec YouTube(string urlOrChannel)
+    {
+        var url = urlOrChannel.Trim();
+        return new ChatSourceSpec("YouTube", $"yt:{url.ToLowerInvariant()}",
+            () => new YouTubeChatClient(url));
+    }
+
+    public static ChatSourceSpec TikTok(string handle)
+    {
+        var h = handle.Trim().TrimStart('@').ToLowerInvariant();
+        return new ChatSourceSpec("TikTok", $"tiktok:{h}",
+            () => new TikTokChatClient(h));
+    }
+}

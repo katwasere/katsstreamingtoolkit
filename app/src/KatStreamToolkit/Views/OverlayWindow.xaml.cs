@@ -5,6 +5,7 @@ using System.Windows.Interop;
 using System.Windows.Threading;
 using KatStreamToolkit.Chat;
 using KatStreamToolkit.Models;
+using KatStreamToolkit.Services;
 
 namespace KatStreamToolkit.Views;
 
@@ -39,10 +40,14 @@ public partial class OverlayWindow : Window
         LocationChanged += (_, _) => OnGeometryChanged();
         SizeChanged += (_, _) => OnGeometryChanged();
 
+        ChatAuthStore.TwitchChanged += OnTwitchAuthChanged;
+        ContextMenuOpening += OnContextMenuOpening;
+
         Closed += (_, _) =>
         {
             PersistGeometry();
             ReleaseSources();
+            ChatAuthStore.TwitchChanged -= OnTwitchAuthChanged;
         };
         Loaded += (_, _) => ApplyLockStyle();
 
@@ -56,6 +61,12 @@ public partial class OverlayWindow : Window
             Hide();
 
         StartSources();
+    }
+
+    private void OnTwitchAuthChanged()
+    {
+        // Token refreshes raise this off the UI thread.
+        Dispatcher.BeginInvoke(RestartSources);
     }
 
     private void OnGeometryChanged()
@@ -145,30 +156,13 @@ public partial class OverlayWindow : Window
         bool wants(ChatMode m) => cfg.Mode == ChatMode.All || cfg.Mode == m;
 
         if (wants(ChatMode.Twitch) && !string.IsNullOrWhiteSpace(cfg.TwitchChannel))
-        {
-            var channel = cfg.TwitchChannel.Trim().TrimStart('#').ToLowerInvariant();
-            specs.Add(new ChatSourceSpec("Twitch", $"twitch:{channel}",
-                () => new TwitchChatClient(channel)));
-        }
+            specs.Add(ChatSources.Twitch(cfg.TwitchChannel));
         if (wants(ChatMode.Kick) && !string.IsNullOrWhiteSpace(cfg.KickChannel))
-        {
-            var channel = cfg.KickChannel.Trim();
-            var manual = string.IsNullOrWhiteSpace(cfg.KickChatroomId) ? null : cfg.KickChatroomId.Trim();
-            specs.Add(new ChatSourceSpec("Kick", $"kick:{manual ?? channel.ToLowerInvariant()}",
-                () => new KickChatClient(channel, manual)));
-        }
+            specs.Add(ChatSources.Kick(cfg.KickChannel, cfg.KickChatroomId));
         if (wants(ChatMode.YouTube) && !string.IsNullOrWhiteSpace(cfg.YouTubeUrl))
-        {
-            var url = cfg.YouTubeUrl.Trim();
-            specs.Add(new ChatSourceSpec("YouTube", $"yt:{url.ToLowerInvariant()}",
-                () => new YouTubeChatClient(url)));
-        }
+            specs.Add(ChatSources.YouTube(cfg.YouTubeUrl));
         if (wants(ChatMode.TikTok) && !string.IsNullOrWhiteSpace(cfg.TikTokHandle))
-        {
-            var handle = cfg.TikTokHandle.Trim().TrimStart('@').ToLowerInvariant();
-            specs.Add(new ChatSourceSpec("TikTok", $"tiktok:{handle}",
-                () => new TikTokChatClient(handle)));
-        }
+            specs.Add(ChatSources.TikTok(cfg.TikTokHandle));
         return specs;
     }
 
@@ -186,6 +180,90 @@ public partial class OverlayWindow : Window
     {
         _atBottom = Scroller.VerticalOffset + Scroller.ViewportHeight >= Scroller.ExtentHeight - 30;
         _lines.Add(msg);
+        while (_lines.Count > _config.MaxMessages)
+            _lines.RemoveAt(0);
+        if (_atBottom)
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, () => Scroller.ScrollToEnd());
+    }
+
+    // Right-click a chat line while the overlay is unlocked: moderation actions
+    // for Twitch lines, when a Twitch account is logged in. Locked overlays are
+    // click-through, so this can only ever happen while unlocked.
+    private void OnContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        var msg = (e.OriginalSource as FrameworkElement)?.DataContext as ChatMessage;
+        if (msg == null || ChatAuthStore.Twitch == null ||
+            !string.Equals(msg.Platform, "Twitch", StringComparison.OrdinalIgnoreCase))
+        {
+            ContextMenu = null;
+            return;
+        }
+        if (ContextMenu is not ContextMenu existing || !ReferenceEquals(existing.Tag, msg))
+            ContextMenu = BuildModMenu(msg);
+    }
+
+    private ContextMenu? BuildModMenu(ChatMessage msg)
+    {
+        var menu = new ContextMenu { Tag = msg };
+        // Never act on broadcasters/moderators.
+        if (!msg.IsMod && msg.AuthorId != null)
+        {
+            menu.Items.Add(ModItem(msg, $"Timeout {msg.Author} (10 min)", $"timed out {msg.Author} for 10 min",
+                (auth, broadcasterId, ct) => ModerationService.TimeoutAsync(auth, broadcasterId, msg.AuthorId!, 600, "kat toolkit", ct)));
+            menu.Items.Add(ModItem(msg, $"Timeout {msg.Author} (1 hour)", $"timed out {msg.Author} for 1 hour",
+                (auth, broadcasterId, ct) => ModerationService.TimeoutAsync(auth, broadcasterId, msg.AuthorId!, 3600, "kat toolkit", ct)));
+            menu.Items.Add(ModItem(msg, $"Ban {msg.Author}", $"banned {msg.Author}",
+                (auth, broadcasterId, ct) => ModerationService.BanAsync(auth, broadcasterId, msg.AuthorId!, "kat toolkit", ct)));
+        }
+        if (msg.MsgId != null)
+        {
+            menu.Items.Add(ModItem(msg, "Delete message", $"deleted {msg.Author}'s message",
+                (auth, broadcasterId, ct) => ModerationService.DeleteMessageAsync(auth, broadcasterId, msg.MsgId!, ct)));
+        }
+        return menu.Items.Count == 0 ? null : menu;
+    }
+
+    private MenuItem ModItem(ChatMessage msg, string header, string okLine,
+        Func<TwitchAuthData, string, CancellationToken, Task<string?>> call)
+    {
+        var item = new MenuItem { Header = header };
+        item.Click += async (_, _) =>
+        {
+            item.IsEnabled = false;
+            try
+            {
+                string? error = await ModerateAsync(msg, call);
+                AppendSystemLine(msg.Platform, error == null ? okLine : $"mod action failed: {error}");
+            }
+            catch (Exception ex)
+            {
+                AppendSystemLine(msg.Platform, $"mod action failed: {ex.Message}");
+            }
+            finally
+            {
+                item.IsEnabled = true;
+            }
+        };
+        return item;
+    }
+
+    private async Task<string?> ModerateAsync(ChatMessage msg,
+        Func<TwitchAuthData, string, CancellationToken, Task<string?>> call)
+    {
+        var auth = ChatAuthStore.Twitch;
+        if (auth == null) return "not logged in to Twitch";
+        string channel = _config.TwitchChannel.Trim().TrimStart('#');
+        if (channel.Length == 0) return "this overlay has no Twitch channel configured";
+        string? broadcasterId = await ModerationService.ResolveBroadcasterIdAsync(channel);
+        if (broadcasterId == null) return $"could not resolve the channel id for '{channel}'";
+        return await call(auth, broadcasterId, CancellationToken.None);
+    }
+
+    // A moderation result (or failure) appears as a toolkit line in the chat.
+    private void AppendSystemLine(string platform, string text)
+    {
+        _atBottom = Scroller.VerticalOffset + Scroller.ViewportHeight >= Scroller.ExtentHeight - 30;
+        _lines.Add(new ChatMessage { Platform = platform, Author = "toolkit", Text = text });
         while (_lines.Count > _config.MaxMessages)
             _lines.RemoveAt(0);
         if (_atBottom)

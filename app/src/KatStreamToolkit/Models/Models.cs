@@ -134,10 +134,12 @@ public class AppConfig : ObservableBase
     private string _serverHost = "";
     private List<DestinationConfig> _destinations = new();
     private List<OverlayConfig> _overlays = new();
+    private List<CommandConfig> _commands = new();
     private bool _watchdogAutoRestart = true;
     private bool _alarmSound = true;
     private bool _obsEnabled;
     private string _obsWebSocketUrl = "ws://127.0.0.1:4455";
+    private string _twitchClientId = "";
 
     public UpstreamConfig Upstream { get => _upstream; set => Set(ref _upstream, value); }
     public MyChannelsConfig MyChannels { get => _myChannels; set => Set(ref _myChannels, value); }
@@ -158,6 +160,7 @@ public class AppConfig : ObservableBase
     public string RemotePath { get => _remotePath; set => Set(ref _remotePath, value); }
     public List<DestinationConfig> Destinations { get => _destinations; set => Set(ref _destinations, value); }
     public List<OverlayConfig> Overlays { get => _overlays; set => Set(ref _overlays, value); }
+    public List<CommandConfig> Commands { get => _commands; set => Set(ref _commands, value); }
 
     // Watchdog: kill a frozen encoder so nginx respawns it, and beep when a new
     // alarm appears. Both persist with the rest of the config.
@@ -168,6 +171,26 @@ public class AppConfig : ObservableBase
     // secrets.json, never here.
     public bool ObsEnabled { get => _obsEnabled; set => Set(ref _obsEnabled, value); }
     public string ObsWebSocketUrl { get => _obsWebSocketUrl; set => Set(ref _obsWebSocketUrl, value); }
+
+    // Twitch application Client ID (public, not a secret) - required once for
+    // the account login that powers chat send, !commands and moderation.
+    public string TwitchClientId { get => _twitchClientId; set => Set(ref _twitchClientId, value); }
+}
+
+// One toolkit-handled !command: reply in chat and/or switch an OBS scene.
+public class CommandConfig : ObservableBase
+{
+    private string _name = "";
+    private string _response = "";
+    private string _scene = "";
+    private bool _enabled = true;
+    private int _cooldownSeconds = 5;
+
+    public string Name { get => _name; set => Set(ref _name, value); }
+    public string Response { get => _response; set => Set(ref _response, value); }
+    public string Scene { get => _scene; set => Set(ref _scene, value); }
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+    public int CooldownSeconds { get => _cooldownSeconds; set => Set(ref _cooldownSeconds, Math.Clamp(value, 0, 600)); }
 }
 
 // One active watchdog alarm, shown in the red banner. Id is stable per condition

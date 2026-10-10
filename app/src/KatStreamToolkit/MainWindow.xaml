@@ -244,6 +244,18 @@
                         <TextBlock Text="TikTok chat API key (Euler Stream)" FontSize="11" Foreground="#FF9AA0A8" />
                         <local:SecretBox SecretText="{Binding EulerApiKey}" Margin="0,2,0,2" />
                         <TextBlock Text="Free key: eulerstream.com - API keys. Only needed for TikTok chat; TikTok video goes through the relay without it." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+                        <TextBlock Text="Twitch account (send + mod actions)" FontSize="11" Foreground="#FF9AA0A8" Margin="0,0,0,2" />
+                        <TextBlock Text="Twitch app Client ID (dev.twitch.tv console)" FontSize="11" Foreground="#FF9AA0A8" />
+                        <TextBox Text="{Binding Config.TwitchClientId, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,4" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Log in..." Command="{Binding LoginTwitchCommand}" Padding="10,3" />
+                            <Button Content="Log out" Command="{Binding LogoutTwitchCommand}" Margin="6,0,0,0" Padding="10,3" />
+                        </StackPanel>
+                        <TextBlock Text="{Binding TwitchAccountText, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding TwitchLoginStatus, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,0" />
+                        <TextBlock Text="One-time setup: create an app at dev.twitch.tv/console (category Chat Bot), redirect URL http://localhost:8770/ - paste its Client ID above. Login powers !command replies, timeout/ban/delete from the overlay, and slow mode." FontSize="10" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,2,0,10" />
+
                         <TextBlock Text="New overlays pre-fill from these." FontSize="10" Foreground="#FF9AA0A8" Margin="0,0,0,10" />
 
                         <StackPanel Orientation="Horizontal">
@@ -321,6 +333,47 @@
                                        FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,4,0,0" />
                         </StackPanel>
                     </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Commands">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding TwitchAccountText, Mode=OneWay}"
+                                   Foreground="#FF9AA0A8" VerticalAlignment="Center" />
+                        <TextBlock Text="!commands handled by the toolkit" FontSize="15" FontWeight="Bold" />
+                    </DockPanel>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,6">
+                        <Button Content="Add command" Command="{Binding AddCommandCommand}" Padding="10,3" />
+                        <Button Content="Remove" Command="{Binding RemoveCommandCommand}" Margin="6,0,0,0" Padding="10,3" />
+                    </StackPanel>
+
+                    <DataGrid Grid.Row="2" ItemsSource="{Binding Commands}" SelectedItem="{Binding SelectedCommand}"
+                              AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                              HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="40" />
+                            <DataGridTextColumn Header="Command (without !)" Binding="{Binding Name}" Width="160" />
+                            <DataGridTextColumn Header="Chat reply" Binding="{Binding Response}" Width="*" />
+                            <DataGridTextColumn Header="OBS scene (optional)" Binding="{Binding Scene}" Width="180" />
+                            <DataGridTextColumn Header="Cooldown s" Binding="{Binding CooldownSeconds}" Width="80" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <StackPanel Grid.Row="3" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding CommandActivityText, Mode=OneWay}" FontSize="11" Foreground="#FF8FD694"
+                                   TextWrapping="Wrap" />
+                        <TextBlock FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="Anyone in your chat types !name - the toolkit replies (Twitch only for now; Kick/YouTube stay read-only until their OAuth work) and switches OBS to the named scene if you set one. Commands run with a per-command cooldown. Moderation: right-click a chat line in an unlocked overlay for timeout / ban / delete (needs the Twitch login from the Chat Overlays tab and mod rights on that channel); Kick and YouTube moderation waits for their own logins." />
+                    </StackPanel>
                 </Grid>
             </TabItem>
 
@@ -430,7 +483,7 @@
 
                         <TextBlock Text="Live lights &amp; what's next" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
-                                   Text="Each destination card shows two lights: the relay-side push light (is the server actually sending?) and the platform-side live light (does the platform show the stream?). Live checks poll the platforms every 30 seconds using each destination's Handle column, falling back to your 'My channels' entries - a green push light next to a dark live light means the server is sending but the platform is not showing it. The watchdog watches the same picture every 10 seconds: if the relay dies, your OBS feed drops mid-stream, an output's encoder dies or freezes, or a push starts failing, a red WATCHDOG banner appears with the reason from the relay log; frozen encoders are killed automatically so nginx respawns them, and a Restart relay button is right there. Go live from the Relay tab: Start stream verifies the relay, starts OBS when 'Control OBS' is on (enable the obs-websocket plugin in OBS: Tools -> WebSocket Server Settings, same password as here), and confirms your stream actually arrives; End stream does the reverse. Up next on the roadmap: moderation + command runner, alert overlays, title/category sync, and OBS scene auto-switching. See docs/ROADMAP.md." />
+                                   Text="Each destination card shows two lights: the relay-side push light (is the server actually sending?) and the platform-side live light (does the platform show the stream?). Live checks poll the platforms every 30 seconds using each destination's Handle column, falling back to your 'My channels' entries - a green push light next to a dark live light means the server is sending but the platform is not showing it. The watchdog watches the same picture every 10 seconds: if the relay dies, your OBS feed drops mid-stream, an output's encoder dies or freezes, or a push starts failing, a red WATCHDOG banner appears with the reason from the relay log; frozen encoders are killed automatically so nginx respawns them, and a Restart relay button is right there. Go live from the Relay tab: Start stream verifies the relay, starts OBS when 'Control OBS' is on (enable the obs-websocket plugin in OBS: Tools -> WebSocket Server Settings, same password as here), and confirms your stream actually arrives; End stream does the reverse. Moderation and !commands are live: log in on the Chat Overlays tab, right-click a chat line in an unlocked overlay to timeout/ban/delete, and build commands on the Commands tab. Up next on the roadmap: alert overlays, title/category sync, and OBS scene auto-switching. See docs/ROADMAP.md." />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

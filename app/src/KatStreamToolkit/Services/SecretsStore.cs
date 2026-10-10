@@ -18,6 +18,14 @@ public class SecretsData
 
     // obs-websocket password for go-live orchestration.
     public string ObsPassword { get; set; } = "";
+
+    // Twitch account tokens (OAuth, powers chat send, !commands, moderation).
+    // Refresh tokens rotate on every use - always store the pair together.
+    public string TwitchAccessToken { get; set; } = "";
+    public string TwitchRefreshToken { get; set; } = "";
+    public DateTime TwitchTokenExpiresUtc { get; set; }
+    public string TwitchLogin { get; set; } = "";
+    public string TwitchUserId { get; set; } = "";
 }
 
 public static class SecretsStore
@@ -90,6 +98,11 @@ public static class SecretsStore
             data.SshPassword = previous.SshPassword;
             data.EulerApiKey = previous.EulerApiKey;
             data.ObsPassword = previous.ObsPassword;
+            data.TwitchAccessToken = previous.TwitchAccessToken;
+            data.TwitchRefreshToken = previous.TwitchRefreshToken;
+            data.TwitchTokenExpiresUtc = previous.TwitchTokenExpiresUtc;
+            data.TwitchLogin = previous.TwitchLogin;
+            data.TwitchUserId = previous.TwitchUserId;
         }
         Save(path, data);
     }

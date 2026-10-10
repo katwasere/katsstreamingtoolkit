@@ -17,8 +17,12 @@ public class MainViewModel : ObservableBase
     private string _nginxPreview = "";
     private OverlayConfig? _selectedOverlay;
     private DestinationConfig? _selectedDestination;
+    private CommandConfig? _selectedCommand;
     private SecretsData _secrets = new();
     private bool _showSecretsInPreview;
+    private KatStreamToolkit.Chat.TwitchAuthData? _twitchAuth;
+    private CommandRunner? _commandRunner;
+    private int _twitchBusy;
 
     public event Action<OverlayConfig>? OverlayAdded;
     public event Action<OverlayConfig>? OverlayRemoved;
@@ -26,6 +30,7 @@ public class MainViewModel : ObservableBase
     public AppConfig Config { get; }
     public ObservableCollection<DestinationConfig> Destinations { get; } = new();
     public ObservableCollection<OverlayConfig> Overlays { get; } = new();
+    public ObservableCollection<CommandConfig> Commands { get; } = new();
 
     public static Platform[] AllPlatforms { get; } = Enum.GetValues<Platform>();
     public static Orientation[] AllOrientations { get; } = Enum.GetValues<Orientation>();
@@ -34,6 +39,7 @@ public class MainViewModel : ObservableBase
     public static string[] AllEncoderPresets { get; } = { "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow" };
 
     public OverlayConfig? SelectedOverlay { get => _selectedOverlay; set => Set(ref _selectedOverlay, value); }
+    public CommandConfig? SelectedCommand { get => _selectedCommand; set => Set(ref _selectedCommand, value); }
     public DestinationConfig? SelectedDestination
     {
         get => _selectedDestination;
@@ -99,6 +105,163 @@ public class MainViewModel : ObservableBase
         TikTokChatClient.ApiKey = string.IsNullOrWhiteSpace(_secrets.EulerApiKey)
             ? null
             : _secrets.EulerApiKey.Trim();
+
+    // ---------- Twitch account (OAuth: chat send, !commands, moderation) ----------
+
+    public string TwitchAccountText => _twitchAuth != null
+        ? $"logged in as {_twitchAuth.Login}"
+        : "not logged in - chat is read-only";
+
+    public string TwitchLoginStatus { get; private set; } = "";
+
+    public string CommandActivityText { get; private set; } = "no commands triggered yet";
+
+    public ICommand LoginTwitchCommand { get; }
+    public ICommand LogoutTwitchCommand { get; }
+    public ICommand AddCommandCommand { get; }
+    public ICommand RemoveCommandCommand { get; }
+
+    private void SetTwitchLoginStatus(string text)
+    {
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            TwitchLoginStatus = text;
+            Raise(nameof(TwitchLoginStatus));
+        });
+    }
+
+    private void SetCommandActivity(string text)
+    {
+        CommandActivityText = text;
+        Raise(nameof(CommandActivityText));
+    }
+
+    private KatStreamToolkit.Chat.TwitchAuthData? BuildAuthFromSecrets() =>
+        string.IsNullOrWhiteSpace(_secrets.TwitchAccessToken)
+            ? null
+            : new KatStreamToolkit.Chat.TwitchAuthData(
+                _secrets.TwitchAccessToken, _secrets.TwitchRefreshToken,
+                _secrets.TwitchTokenExpiresUtc, _secrets.TwitchLogin, _secrets.TwitchUserId);
+
+    // One function that mirrors secrets -> ChatAuthStore; called after login,
+    // logout, load and every refresh. Chat clients pick the auth up when their
+    // sources restart - so unchanged auth (e.g. typing in the Client ID field)
+    // must NOT repush, or every keystroke would reconnect every overlay.
+    private void SyncTwitchAuth()
+    {
+        ModerationService.ClientId = string.IsNullOrWhiteSpace(Config.TwitchClientId)
+            ? null
+            : Config.TwitchClientId.Trim();
+        var auth = BuildAuthFromSecrets();
+        bool unchanged = (auth == null && _twitchAuth == null) ||
+                         (auth != null && _twitchAuth != null &&
+                          auth.AccessToken == _twitchAuth.AccessToken);
+        _twitchAuth = auth;
+        if (!unchanged)
+        {
+            KatStreamToolkit.Chat.ChatAuthStore.SetTwitch(auth);
+            Raise(nameof(TwitchAccountText));
+        }
+        if (auth != null &&
+            auth.ExpiresUtc < DateTime.UtcNow + TimeSpan.FromMinutes(30) &&
+            !string.IsNullOrWhiteSpace(auth.RefreshToken))
+            _ = RefreshTwitchTokenAsync();
+    }
+
+    private async Task RefreshTwitchTokenAsync()
+    {
+        if (Interlocked.CompareExchange(ref _twitchBusy, 1, 0) != 0) return;
+        try
+        {
+            var auth = await TwitchAuthService.RefreshAsync(
+                Config.TwitchClientId, _secrets.TwitchRefreshToken);
+            StoreTwitchAuth(auth);
+            SetTwitchLoginStatus($"session refreshed ({auth.Login})");
+        }
+        catch (Exception ex)
+        {
+            SetTwitchLoginStatus($"token refresh failed ({ex.Message}) - log in again");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _twitchBusy, 0);
+            CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    private void StoreTwitchAuth(KatStreamToolkit.Chat.TwitchAuthData auth)
+    {
+        _secrets.TwitchAccessToken = auth.AccessToken;
+        _secrets.TwitchRefreshToken = auth.RefreshToken;
+        _secrets.TwitchTokenExpiresUtc = auth.ExpiresUtc;
+        _secrets.TwitchLogin = auth.Login;
+        _secrets.TwitchUserId = auth.UserId;
+        Save();
+        SyncTwitchAuth();
+    }
+
+    private void LoginTwitch()
+    {
+        if (Interlocked.CompareExchange(ref _twitchBusy, 1, 0) != 0) return;
+        Task.Run(async () =>
+        {
+            try
+            {
+                SetTwitchLoginStatus("waiting for the browser login...");
+                var auth = await TwitchAuthService.LoginAsync(Config.TwitchClientId, SetTwitchLoginStatus);
+                StoreTwitchAuth(auth);
+                SetTwitchLoginStatus("logged in - overlays reconnect with your account");
+            }
+            catch (Exception ex)
+            {
+                SetTwitchLoginStatus($"login failed: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _twitchBusy, 0);
+                CommandManager.InvalidateRequerySuggested();
+            }
+        });
+    }
+
+    private void LogoutTwitch()
+    {
+        _secrets.TwitchAccessToken = "";
+        _secrets.TwitchRefreshToken = "";
+        _secrets.TwitchTokenExpiresUtc = default;
+        _secrets.TwitchLogin = "";
+        _secrets.TwitchUserId = "";
+        Save();
+        SyncTwitchAuth();
+        SetTwitchLoginStatus("logged out");
+    }
+
+    private async Task SwitchObsSceneAsync(string scene)
+    {
+        if (_obs is not { IsConnected: true })
+            throw new Exception("OBS control is off or not connected (Relay & Routing tab)");
+        await _obs.SetCurrentProgramScene(scene);
+    }
+
+    private void AddCommand()
+    {
+        var cmd = new CommandConfig { Name = $"command{Commands.Count + 1}" };
+        Commands.Add(cmd);
+        SelectedCommand = cmd;
+    }
+
+    private void OnOverlayChannelChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(OverlayConfig.TwitchChannel)
+            or nameof(OverlayConfig.KickChannel)
+            or nameof(OverlayConfig.KickChatroomId)
+            or nameof(OverlayConfig.YouTubeUrl))
+            _commandRunner?.SyncSources();
+    }
+
+    // Called when the main window closes: releases the command runner's chat
+    // entries (the overlays release their own on window close).
+    public void Shutdown() => _commandRunner?.Dispose();
 
     // ---------- OBS control (obs-websocket) ----------
 
@@ -736,14 +899,35 @@ public class MainViewModel : ObservableBase
         Overlays.CollectionChanged += (_, e) =>
         {
             Config.Overlays = Overlays.ToList();
+            // The command runner watches every overlay's channels too.
+            if (e.NewItems != null) foreach (OverlayConfig o in e.NewItems) o.PropertyChanged += OnOverlayChannelChanged;
+            if (e.OldItems != null) foreach (OverlayConfig o in e.OldItems) o.PropertyChanged -= OnOverlayChannelChanged;
             Save();
+            _commandRunner?.SyncSources();
+        };
+        Commands.CollectionChanged += (_, e) =>
+        {
+            if (e.NewItems != null)
+                foreach (CommandConfig c in e.NewItems)
+                    c.PropertyChanged += (_, _) => ScheduleSave();
+            Config.Commands = Commands.ToList();
+            ScheduleSave();
         };
         Config.Upstream.PropertyChanged += (_, _) => Refresh();
-        Config.MyChannels.PropertyChanged += (_, _) => ScheduleSave();
+        Config.MyChannels.PropertyChanged += (_, _) =>
+        {
+            ScheduleSave();
+            _commandRunner?.SyncSources();
+        };
         Config.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(AppConfig.ObsEnabled) or nameof(AppConfig.ObsWebSocketUrl))
                 EnsureObsClient();
+            else if (e.PropertyName is nameof(AppConfig.TwitchClientId))
+            {
+                SyncTwitchAuth();
+                ScheduleSave();
+            }
         };
 
         // Created BEFORE the collections below are populated: adding the loaded
@@ -793,10 +977,25 @@ public class MainViewModel : ObservableBase
         }, _ => !IsRunning);
         GoLiveCommand = new RelayCommand(_ => RunBackground(GoLiveFlowAsync), _ => !IsRunning);
         EndStreamCommand = new RelayCommand(_ => RunBackground(EndStreamFlowAsync), _ => !IsRunning);
+        LoginTwitchCommand = new RelayCommand(_ => LoginTwitch(), _ => _twitchBusy == 0);
+        LogoutTwitchCommand = new RelayCommand(_ => LogoutTwitch(), _ => _twitchAuth != null);
+        AddCommandCommand = new RelayCommand(_ => AddCommand());
+        RemoveCommandCommand = new RelayCommand(_ =>
+        {
+            if (SelectedCommand != null) Commands.Remove(SelectedCommand);
+        }, _ => SelectedCommand != null);
         EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
         foreach (var o in Config.Overlays) Overlays.Add(o);
+        foreach (var c in Config.Commands) Commands.Add(c);
+
+        // The command runner watches all configured channels for !commands;
+        // its ChatHub entries share connections with the overlays.
+        _commandRunner = new CommandRunner(Config, SwitchObsSceneAsync);
+        _commandRunner.Activity += s => Application.Current?.Dispatcher.BeginInvoke(() => SetCommandActivity(s));
+        SyncTwitchAuth();
+        _commandRunner.SyncSources();
 
         _autoSave = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
         _autoSave.Tick += (_, _) => Save();

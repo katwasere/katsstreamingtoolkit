@@ -17,7 +17,11 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = (MainViewModel)DataContext;
         Loaded += OnLoaded;
-        Closed += (_, _) => _vm.Save();
+        Closed += (_, _) =>
+        {
+            _vm.Shutdown();
+            _vm.Save();
+        };
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)

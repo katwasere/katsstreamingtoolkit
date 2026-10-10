@@ -5,23 +5,37 @@ using System.Text;
 
 namespace KatStreamToolkit.Chat;
 
-// Read-only anonymous Twitch IRC connection (justinfan). No account or OAuth needed.
-public sealed class TwitchChatClient : IChatClient
+// Twitch IRC. Anonymous (justinfan) read-only by default; with a login+token it
+// connects authenticated, joins with the account's permissions and gains the
+// ability to SEND messages (the foundation for !command replies).
+public sealed class TwitchChatClient : IChatClient, IChatSender
 {
     private const string Host = "irc.chat.twitch.tv";
     private const int Port = 6697;
 
     private readonly string _channel;
+    private readonly string? _login;
+    private readonly string? _accessToken;
     private CancellationTokenSource? _cts;
+
+    // Live only while the read loop is inside a connected session; the send
+    // path takes the gate so a write can never race the writer's disposal.
+    private StreamWriter? _writer;
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private DateTime _lastSend = DateTime.MinValue;
 
     public string PlatformName => "Twitch";
     public event Action<ChatMessage>? MessageReceived;
     public event Action<string>? StatusChanged;
 
-    public TwitchChatClient(string channel)
+    public TwitchChatClient(string channel, string? login = null, string? accessToken = null)
     {
         _channel = channel.TrimStart('#').ToLowerInvariant();
+        _login = string.IsNullOrWhiteSpace(login) ? null : login.Trim();
+        _accessToken = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken.Trim();
     }
+
+    public bool CanSend => _login != null && _accessToken != null;
 
     public void Start()
     {
@@ -34,12 +48,13 @@ public sealed class TwitchChatClient : IChatClient
     private async void Run(CancellationTokenSource cts)
     {
         CancellationToken ct = cts.Token;
-        string nick = $"justinfan{Random.Shared.Next(10000, 99999)}";
+        string nick = _login ?? $"justinfan{Random.Shared.Next(10000, 99999)}";
         var backoff = TimeSpan.FromSeconds(3);
         try
         {
             while (!ct.IsCancellationRequested)
             {
+                StreamWriter? writer = null;
                 try
                 {
                     StatusChanged?.Invoke("connecting...");
@@ -49,10 +64,13 @@ public sealed class TwitchChatClient : IChatClient
                     await using var ssl = new SslStream(tcp.GetStream());
                     await ssl.AuthenticateAsClientAsync(Host);
                     using var reader = new StreamReader(ssl, Encoding.UTF8);
-                    await using var writer = new StreamWriter(ssl, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\r\n" };
+                    writer = new StreamWriter(ssl, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\r\n" };
+
+                    if (_accessToken != null)
+                        await writer.WriteLineAsync($"PASS oauth:{_accessToken}");
+                    await writer.WriteLineAsync($"NICK {nick}");
 
                     await writer.WriteLineAsync("CAP REQ :twitch.tv/tags");
-                    await writer.WriteLineAsync($"NICK {nick}");
                     await writer.WriteLineAsync($"JOIN #{_channel}");
 
                     string? line;
@@ -66,9 +84,18 @@ public sealed class TwitchChatClient : IChatClient
                         // Only OUR join (or the 001 welcome) means connected - any
                         // " JOIN " line fires whenever someone else joins the room.
                         if (line.Contains(" 001 ") || line.StartsWith(':' + nick + '!'))
-                            StatusChanged?.Invoke("connected");
+                        {
+                            // Publish the writer only once the room state is live,
+                            // so sends never race the join.
+                            await _sendGate.WaitAsync(ct);
+                            try { _writer = writer; } finally { _sendGate.Release(); }
+                            StatusChanged?.Invoke(_accessToken != null ? "connected (logged in)" : "connected");
+                        }
                         if (line.Contains("RECONNECT"))
                             throw new IOException("server requested reconnect");
+                        if (line.Contains("Login authentication failed") ||
+                            line.Contains("Improperly formatted AUTH"))
+                            StatusChanged?.Invoke("twitch rejected the login - log in again on the Chat Overlays tab");
                         ParseAndRaise(line);
                     }
                 }
@@ -80,6 +107,18 @@ public sealed class TwitchChatClient : IChatClient
                 {
                     StatusChanged?.Invoke($"reconnecting ({ex.Message})");
                 }
+                finally
+                {
+                    // Take the writer back out under the send gate, THEN dispose -
+                    // a concurrent TrySendAsync can never write to a dead stream.
+                    try
+                    {
+                        await _sendGate.WaitAsync(CancellationToken.None);
+                        try { _writer = null; } finally { _sendGate.Release(); }
+                    }
+                    catch { }
+                    try { writer?.Dispose(); } catch { }
+                }
                 try { await Task.Delay(backoff, ct); } catch (OperationCanceledException) { return; }
             }
         }
@@ -90,6 +129,42 @@ public sealed class TwitchChatClient : IChatClient
             // Task.Delay(backoff, ct) threw ObjectDisposedException out of this
             // async void and crashed the process.
             try { cts.Dispose(); } catch { }
+        }
+    }
+
+    // IRC words cannot contain CR/LF; flatten them so a config response can
+    // never inject a second IRC message.
+    public async Task<bool> TrySendAsync(string text)
+    {
+        if (!CanSend) return false;
+        text = text.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (text.Length == 0) return false;
+
+        // Pace sends: Twitch allows ~20 messages/30s for regular users (100 for
+        // mods) and rejects beyond that with no retry hint. One message per
+        // 1.2s is far inside the limit for a command bot.
+        var sinceLast = DateTime.UtcNow - _lastSend;
+        if (sinceLast < TimeSpan.FromMilliseconds(1200))
+        {
+            try { await Task.Delay(TimeSpan.FromMilliseconds(1200) - sinceLast); }
+            catch { return false; }
+        }
+        try
+        {
+            await _sendGate.WaitAsync();
+            try
+            {
+                var w = _writer;
+                if (w == null) return false;
+                await w.WriteLineAsync($"PRIVMSG #{_channel} :{text}");
+                _lastSend = DateTime.UtcNow;
+                return true;
+            }
+            finally { _sendGate.Release(); }
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -125,6 +200,9 @@ public sealed class TwitchChatClient : IChatClient
 
         string? color = null;
         string author = nick;
+        string? msgId = null;
+        string? authorId = null;
+        bool isMod = false;
         if (tagsPart != null)
         {
             foreach (var pair in tagsPart.Split(';'))
@@ -135,6 +213,11 @@ public sealed class TwitchChatClient : IChatClient
                 var val = UnescapeTag(pair[(eq + 1)..]);
                 if (key == "display-name" && val.Length > 0) author = val;
                 else if (key == "color" && val.Length > 1) color = val;
+                else if (key == "id" && val.Length > 0) msgId = val;
+                else if (key == "user-id" && val.Length > 0) authorId = val;
+                else if (key == "badges" &&
+                         (val.Contains("broadcaster/") || val.Contains("moderator/")))
+                    isMod = true;
             }
         }
 
@@ -152,6 +235,9 @@ public sealed class TwitchChatClient : IChatClient
             Color = color,
             Text = text,
             IsAction = isAction,
+            MsgId = msgId,
+            AuthorId = authorId,
+            IsMod = isMod,
         });
     }
 

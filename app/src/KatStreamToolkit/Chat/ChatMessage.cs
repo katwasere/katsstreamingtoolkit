@@ -11,6 +11,16 @@ public sealed class ChatMessage
     public bool IsAction { get; init; }
     public DateTime Received { get; init; } = DateTime.Now;
 
+    // Platform ids where the platform provides them (Twitch does): the message
+    // id powers "delete message" and the author id powers timeout/ban. Null on
+    // platforms/connectors that don't hand them out.
+    public string? MsgId { get; init; }
+    public string? AuthorId { get; init; }
+
+    // The author carries a broadcaster or moderator badge - moderation tools
+    // must never act on these.
+    public bool IsMod { get; init; }
+
     public string PlatformTag => Platform switch
     {
         "Twitch" => "T",
