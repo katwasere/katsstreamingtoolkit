@@ -8,7 +8,7 @@ namespace KatStreamToolkit.Chat;
 // Twitch IRC. Anonymous (justinfan) read-only by default; with a login+token it
 // connects authenticated, joins with the account's permissions and gains the
 // ability to SEND messages (the foundation for !command replies).
-public sealed class TwitchChatClient : IChatClient, IChatSender
+public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
 {
     private const string Host = "irc.chat.twitch.tv";
     private const int Port = 6697;
