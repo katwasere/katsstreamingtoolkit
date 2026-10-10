@@ -27,6 +27,11 @@ public class SecretsData
     public string TwitchLogin { get; set; } = "";
     public string TwitchUserId { get; set; } = "";
 
+    // The Twitch app's client secret - required for Confidential-type apps
+    // (the dev console default), never needed once the app is switched to
+    // Public. Secret like everything else here.
+    public string TwitchClientSecret { get; set; } = "";
+
     // Hash of the nginx config the last successful deploy shipped. Compared
     // against what the app generates NOW, locally, so the toolkit can say
     // "the server still runs the old config - redeploy" the moment a key or
@@ -110,6 +115,7 @@ public static class SecretsStore
             data.TwitchTokenExpiresUtc = previous.TwitchTokenExpiresUtc;
             data.TwitchLogin = previous.TwitchLogin;
             data.TwitchUserId = previous.TwitchUserId;
+            data.TwitchClientSecret = previous.TwitchClientSecret;
             data.LastDeployedNginxHash = previous.LastDeployedNginxHash;
             data.LastDeployedAtUtc = previous.LastDeployedAtUtc;
         }

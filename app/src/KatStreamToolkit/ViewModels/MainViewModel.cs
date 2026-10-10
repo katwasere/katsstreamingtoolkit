@@ -109,6 +109,18 @@ public class MainViewModel : ObservableBase
         }
     }
 
+    // Twitch app client secret - only needed for Confidential-type apps.
+    public string TwitchClientSecret
+    {
+        get => _secrets.TwitchClientSecret;
+        set
+        {
+            if (_secrets.TwitchClientSecret == value) return;
+            _secrets.TwitchClientSecret = value;
+            ScheduleSave();
+        }
+    }
+
     private void SyncEulerKey() =>
         TikTokChatClient.ApiKey = string.IsNullOrWhiteSpace(_secrets.EulerApiKey)
             ? null
@@ -185,7 +197,7 @@ public class MainViewModel : ObservableBase
         try
         {
             var auth = await TwitchAuthService.RefreshAsync(
-                Config.TwitchClientId, _secrets.TwitchRefreshToken);
+                Config.TwitchClientId, _secrets.TwitchClientSecret, _secrets.TwitchRefreshToken);
             StoreTwitchAuth(auth);
             SetTwitchLoginStatus($"session refreshed ({auth.Login})");
         }
@@ -219,7 +231,8 @@ public class MainViewModel : ObservableBase
             try
             {
                 SetTwitchLoginStatus("waiting for the browser login...");
-                var auth = await TwitchAuthService.LoginAsync(Config.TwitchClientId, SetTwitchLoginStatus);
+                var auth = await TwitchAuthService.LoginAsync(
+                    Config.TwitchClientId, _secrets.TwitchClientSecret, SetTwitchLoginStatus);
                 StoreTwitchAuth(auth);
                 SetTwitchLoginStatus("logged in - overlays reconnect with your account");
             }

@@ -26,7 +26,7 @@ public static class TwitchAuthService
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
 
-    public static async Task<TwitchAuthData> LoginAsync(string clientId, Action<string> log, CancellationToken ct = default)
+    public static async Task<TwitchAuthData> LoginAsync(string clientId, string? clientSecret, Action<string> log, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(clientId))
             throw new Exception("paste your Twitch application Client ID first (Chat Overlays tab)");
@@ -72,6 +72,10 @@ public static class TwitchAuthService
                 ["redirect_uri"] = RedirectUri,
                 ["code_verifier"] = verifier,
             };
+            // Confidential apps (the dev console default) demand the secret on
+            // the exchange; Public apps work with PKCE alone.
+            if (!string.IsNullOrWhiteSpace(clientSecret))
+                form["client_secret"] = clientSecret.Trim();
             using (var content = new FormUrlEncodedContent(form))
             using (var resp = await Http.PostAsync("https://id.twitch.tv/oauth2/token", content, ct))
             {
@@ -81,7 +85,7 @@ public static class TwitchAuthService
                 if (!root.TryGetProperty("access_token", out var at))
                 {
                     string error = root.TryGetProperty("message", out var m) ? m.GetString() ?? body : body;
-                    throw new Exception($"token exchange failed: {error}");
+                    throw new Exception($"token exchange failed: {ExchangeHint(error)}");
                 }
                 string access = at.GetString() ?? "";
                 string refresh = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() ?? "" : "";
@@ -96,7 +100,7 @@ public static class TwitchAuthService
 
     // Twitch rotates refresh tokens on every use; callers must store the pair
     // the method returns, not keep the old refresh token.
-    public static async Task<TwitchAuthData> RefreshAsync(string clientId, string refreshToken, CancellationToken ct = default)
+    public static async Task<TwitchAuthData> RefreshAsync(string clientId, string? clientSecret, string refreshToken, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
             throw new Exception("no refresh token stored - log in again");
@@ -106,6 +110,8 @@ public static class TwitchAuthService
             ["grant_type"] = "refresh_token",
             ["refresh_token"] = refreshToken,
         };
+        if (!string.IsNullOrWhiteSpace(clientSecret))
+            form["client_secret"] = clientSecret.Trim();
         using var content = new FormUrlEncodedContent(form);
         using var resp = await Http.PostAsync("https://id.twitch.tv/oauth2/token", content, ct);
         string body = await resp.Content.ReadAsStringAsync(ct);
@@ -114,12 +120,19 @@ public static class TwitchAuthService
         if (!root.TryGetProperty("access_token", out var at))
         {
             string error = root.TryGetProperty("message", out var m) ? m.GetString() ?? body : body;
-            throw new Exception($"token refresh failed: {error}");
+            throw new Exception($"token refresh failed: {ExchangeHint(error)}");
         }
         string access = at.GetString() ?? "";
         string refresh = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() ?? refreshToken : refreshToken;
         return await ValidateAsync(clientId, access, refresh, ct);
     }
+
+    // Turns Twitch's laconic "missing client secret" into the actual decision
+    // the user faces: make the app Public, or hand the toolkit the secret.
+    private static string ExchangeHint(string error) =>
+        error.Contains("client secret", StringComparison.OrdinalIgnoreCase)
+            ? error + " - either set your Twitch app's Client Type to 'Public' in the dev console, or paste its Client Secret in the toolkit (Chat Overlays tab)"
+            : error;
 
     private static async Task<TwitchAuthData> ValidateAsync(string clientId, string accessToken, string refreshToken, CancellationToken ct)
     {
