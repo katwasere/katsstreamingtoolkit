@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using KatStreamToolkit.Models;
@@ -45,6 +46,7 @@ public static class ConfigStore
                 cfg.Commands ??= new List<CommandConfig>();
                 cfg.Upstream ??= new UpstreamConfig();
                 cfg.MyChannels ??= new MyChannelsConfig();
+                NormalizeNullStrings(cfg);
                 ClearKnownDeadDefaultIngest(cfg);
                 return cfg;
             }
@@ -67,13 +69,25 @@ public static class ConfigStore
 
     internal static void AtomicWrite(string path, string content)
     {
-        string tmp = path + ".tmp";
+        // BUG-60: a fixed ".tmp" name raced concurrent saves (LoginTwitch's
+        // off-UI-thread Save vs the debounced autosave) - one IOException and
+        // that save was lost silently, a rotated refresh token among the
+        // casualties. A unique temp file per write makes concurrent writes
+        // independent; File.Replace still lands each atomically and keeps .bak.
+        string tmp = path + ".tmp" + Guid.NewGuid().ToString("N");
         string bak = path + ".bak";
-        File.WriteAllText(tmp, content);
-        if (File.Exists(path))
-            File.Replace(tmp, path, bak);
-        else
-            File.Move(tmp, path);
+        try
+        {
+            File.WriteAllText(tmp, content);
+            if (File.Exists(path))
+                File.Replace(tmp, path, bak);
+            else
+                File.Move(tmp, path);
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
     }
 
     // One-time migration: older builds stored keys inside config.json.
@@ -120,6 +134,49 @@ public static class ConfigStore
         catch
         {
             return null;
+        }
+    }
+
+    // BUG-63: one JSON null over a non-nullable string property (hand-edited
+    // config.json is an anticipated scenario) assigned null into e.g.
+    // IngestUrl - the .Trim() in ClearKnownDeadDefaultIngest then threw an NRE
+    // that the per-file catch swallowed, BOTH copies "failed", and the whole
+    // config reset to defaults. Walk the loaded graph once and coalesce every
+    // null string back to "" before any code touches the config.
+    private static void NormalizeNullStrings(object root)
+    {
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        Walk(root, 0);
+
+        void Walk(object? node, int depth)
+        {
+            if (node is null || depth > 8 || !visited.Add(node)) return;
+            if (node is IEnumerable<object> list)
+            {
+                foreach (var item in list) Walk(item, depth + 1);
+                return;
+            }
+            var type = node.GetType();
+            if (!type.IsClass) return;
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                // Computed getters can themselves NRE on a half-null node - this
+                // pass must never throw, or Load falls back to defaults again.
+                try
+                {
+                    if (prop.GetIndexParameters().Length > 0 || !prop.CanRead) continue;
+                    if (prop.PropertyType == typeof(string))
+                    {
+                        if (prop.CanWrite && prop.GetValue(node) is null)
+                            prop.SetValue(node, "");
+                    }
+                    else if (prop.PropertyType.IsClass)
+                    {
+                        Walk(prop.GetValue(node), depth + 1);
+                    }
+                }
+                catch { }
+            }
         }
     }
 

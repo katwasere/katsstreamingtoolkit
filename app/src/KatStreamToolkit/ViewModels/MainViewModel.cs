@@ -22,6 +22,9 @@ public class MainViewModel : ObservableBase
     private bool _showSecretsInPreview;
     private KatStreamToolkit.Chat.TwitchAuthData? _twitchAuth;
     private CommandRunner? _commandRunner;
+    private AlertService? _alertService;
+    private ObsAutoSwitchService? _autoSwitch;
+    private PollService? _pollService;
     private int _twitchBusy;
 
     public event Action<OverlayConfig>? OverlayAdded;
@@ -29,16 +32,34 @@ public class MainViewModel : ObservableBase
     public event Action<OverlayConfig>? OverlayTestMessages;
     public event Action<KatStreamToolkit.Chat.ChatMessage>? OverlayChatLine;
 
+    // One alert line (follow/sub/raid) for every overlay window.
+    public event Action<KatStreamToolkit.Chat.ChatMessage>? OverlayAlertLine;
+
+    // New poll/prediction state for the widget (null = hide it).
+    public event Action<Services.PollService.PollState?>? PollStateChanged;
+
     public AppConfig Config { get; }
     public ObservableCollection<DestinationConfig> Destinations { get; } = new();
     public ObservableCollection<OverlayConfig> Overlays { get; } = new();
     public ObservableCollection<CommandConfig> Commands { get; } = new();
+
+    // Recent alerts, newest first - doubles as the alert diagnostics (an
+    // event that arrives but never shows means a delivery problem upstream).
+    public System.Collections.ObjectModel.ObservableCollection<Chat.AlertEvent> RecentAlerts { get; } = new();
 
     public static Platform[] AllPlatforms { get; } = Enum.GetValues<Platform>();
     public static Orientation[] AllOrientations { get; } = Enum.GetValues<Orientation>();
     public static PortraitStyle[] AllPortraitStyles { get; } = Enum.GetValues<PortraitStyle>();
     public static ChatMode[] AllChatModes { get; } = Enum.GetValues<ChatMode>();
     public static string[] AllEncoderPresets { get; } = { "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow" };
+
+    // Suggestions for the overlay font picker (editable - any installed font
+    // name works).
+    public static string[] AllOverlayFonts { get; } =
+    {
+        "Segoe UI", "Arial", "Verdana", "Trebuchet MS", "Tahoma",
+        "Comic Sans MS", "Impact", "Georgia", "Consolas", "Courier New",
+    };
 
     public OverlayConfig? SelectedOverlay { get => _selectedOverlay; set => Set(ref _selectedOverlay, value); }
     public CommandConfig? SelectedCommand { get => _selectedCommand; set => Set(ref _selectedCommand, value); }
@@ -127,6 +148,9 @@ public class MainViewModel : ObservableBase
             ? null
             : _secrets.EulerApiKey.Trim();
 
+    private void SyncChatFilter() =>
+        ChatFilter.Configure(Config.Moderation.Enabled, Config.Moderation.BannedWords);
+
     // ---------- Twitch account (OAuth: chat send, !commands, moderation) ----------
 
     public string TwitchAccountText => _twitchAuth != null
@@ -137,6 +161,15 @@ public class MainViewModel : ObservableBase
 
     public string CommandActivityText { get; private set; } = "no commands triggered yet";
 
+    public string AlertStatusText { get; private set; } = "alerts: idle";
+
+    public string ObsAutoSwitchStatusText { get; private set; } = "no alerts handled yet";
+
+    public string PollStatusText { get; private set; } = "poll widget off";
+
+    // Shown in the Alerts tab: the banner file used when the path field is empty.
+    public string AlertBannerDefaultPath => Services.AlertService.DefaultBannerPath;
+
     public ICommand LoginTwitchCommand { get; }
     public ICommand LogoutTwitchCommand { get; }
     public ICommand AddCommandCommand { get; }
@@ -145,6 +178,10 @@ public class MainViewModel : ObservableBase
     public ICommand SyncOverlaysFromMyChannelsCommand { get; }
     public ICommand CaptureChatDiagnosticsCommand { get; }
     public ICommand ToggleOverlaysLockCommand { get; }
+    public ICommand TestAlertFollowCommand { get; }
+    public ICommand TestAlertSubCommand { get; }
+    public ICommand TestAlertRaidCommand { get; }
+    public ICommand CreateTestPollCommand { get; }
 
     private void SetTwitchLoginStatus(string text)
     {
@@ -159,6 +196,25 @@ public class MainViewModel : ObservableBase
     {
         CommandActivityText = text;
         Raise(nameof(CommandActivityText));
+    }
+
+    // One real (or test) alert: recent list for the Alerts tab + one text line
+    // per overlay window. The overlay windows honor their own ShowAlerts
+    // toggle; the banner file was already written by AlertService. The OBS
+    // scene auto-switch rides the same event (test alerts included).
+    private void OnAlertEvent(Chat.AlertEvent alert)
+    {
+        RecentAlerts.Insert(0, alert);
+        while (RecentAlerts.Count > 50)
+            RecentAlerts.RemoveAt(RecentAlerts.Count - 1);
+        OverlayAlertLine?.Invoke(new Chat.ChatMessage
+        {
+            Platform = alert.Platform,
+            Author = "alert",
+            Text = alert.Display,
+            Alert = alert,
+        });
+        if (_autoSwitch != null) _ = _autoSwitch.HandleAlertAsync(alert);
     }
 
     private KatStreamToolkit.Chat.TwitchAuthData? BuildAuthFromSecrets() =>
@@ -282,7 +338,10 @@ public class MainViewModel : ObservableBase
             or nameof(OverlayConfig.KickChannel)
             or nameof(OverlayConfig.KickChatroomId)
             or nameof(OverlayConfig.YouTubeUrl))
+        {
             _commandRunner?.SyncSources();
+            _alertService?.SyncChannels();
+        }
     }
 
     // One-click catch-up: point EVERY overlay at the current "My channels"    // values (used when overlays were left on a channel that has since been
@@ -342,8 +401,15 @@ public class MainViewModel : ObservableBase
     }
 
     // Called when the main window closes: releases the command runner's chat
-    // entries (the overlays release their own on window close).
-    public void Shutdown() => _commandRunner?.Dispose();
+    // entries (the overlays release their own on window close), stops the
+    // alert connection and the poll/auto-switch services.
+    public void Shutdown()
+    {
+        _commandRunner?.Dispose();
+        _alertService?.Dispose();
+        _autoSwitch?.Dispose();
+        _pollService?.Dispose();
+    }
 
     // ---------- OBS control (obs-websocket) ----------
 
@@ -356,9 +422,33 @@ public class MainViewModel : ObservableBase
         {
             if (_secrets.ObsPassword == value) return;
             _secrets.ObsPassword = value;
-            RecreateObsClient();
+            // BUG-74: recreating per keystroke churned a websocket client +
+            // connect thread per character - debounce instead.
+            ScheduleObsRecreate();
             ScheduleSave();
         }
+    }
+
+    // BUG-74: one pending recreate while the password is being typed; and each
+    // client carries its generation so a replaced client's late "connecting..."
+    // status can never overwrite a newer "connected" (or vice versa).
+    private DispatcherTimer? _obsRecreateDebounce;
+    private int _obsGeneration;
+
+    private void ScheduleObsRecreate()
+    {
+        if (_obsRecreateDebounce == null)
+        {
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                RecreateObsClient();
+            };
+            _obsRecreateDebounce = t;
+        }
+        _obsRecreateDebounce.Stop();
+        _obsRecreateDebounce.Start();
     }
 
     public string ObsConnectionText { get; private set; } = "obs control off";
@@ -383,15 +473,22 @@ public class MainViewModel : ObservableBase
 
     private void RecreateObsClient()
     {
+        // An explicit recreate (keys file changed, enable toggle) supersedes
+        // whatever keystroke debounce was pending.
+        _obsRecreateDebounce?.Stop();
         _obs?.Dispose();
         _obs = null;
         if (!Config.ObsEnabled) return;
+        int gen = ++_obsGeneration;
         _obs = new ObsWebSocketClient(Config.ObsWebSocketUrl, ObsPassword);
         _obs.StatusChanged += s => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (gen != _obsGeneration) return; // replaced client - its status is stale
             SetObsStatus("obs: " + s,
                 s == "connected" ? VerifyLight.Ok
                 : s.StartsWith("wrong password") ? VerifyLight.Error
-                : VerifyLight.Idle));
+                : VerifyLight.Idle);
+        });
         _obs.Start();
         SetObsStatus("obs: connecting...", VerifyLight.Idle);
     }
@@ -438,6 +535,16 @@ public class MainViewModel : ObservableBase
     };
 
     public VerifyLight RelayLight { get; private set; } = VerifyLight.Unknown;
+
+    // True when there is real evidence a stream is running right now: the
+    // relay is receiving the OBS feed, or any enabled destination is pushing
+    // or already live on its platform. Drives the main window's
+    // "close = minimize" protection. Unknown (never polled) counts as off -
+    // overlays being open is the primary guard there.
+    public bool IsStreamActive =>
+        ObsLight == VerifyLight.Ok ||
+        Destinations.Any(d => d.Enabled && (d.LiveLight == VerifyLight.Ok || d.PushLight == VerifyLight.Ok));
+
     public string RelayLightText => RelayLight switch
     {
         VerifyLight.Ok => "alive",
@@ -987,6 +1094,7 @@ public class MainViewModel : ObservableBase
             if (e.OldItems != null) foreach (OverlayConfig o in e.OldItems) o.PropertyChanged -= OnOverlayChannelChanged;
             Save();
             _commandRunner?.SyncSources();
+            _alertService?.SyncChannels();
         };
         Commands.CollectionChanged += (_, e) =>
         {
@@ -1002,6 +1110,7 @@ public class MainViewModel : ObservableBase
             PropagateMyChannelsToOverlays();
             ScheduleSave();
             _commandRunner?.SyncSources();
+            _alertService?.SyncChannels();
         };
         Config.PropertyChanged += (_, e) =>
         {
@@ -1012,6 +1121,15 @@ public class MainViewModel : ObservableBase
                 SyncTwitchAuth();
                 ScheduleSave();
             }
+        };
+        // The shared chat filter: overlays consult the static ChatFilter at
+        // render time - keep it in sync with the config (and seed it now, so a
+        // loaded list is active before the first overlay renders).
+        SyncChatFilter();
+        Config.Moderation.PropertyChanged += (_, _) =>
+        {
+            SyncChatFilter();
+            ScheduleSave();
         };
 
         // Created BEFORE the collections below are populated: adding the loaded
@@ -1075,11 +1193,46 @@ public class MainViewModel : ObservableBase
         }, _ => SelectedOverlay != null);
         SyncOverlaysFromMyChannelsCommand = new RelayCommand(_ => SyncOverlaysFromMyChannels(), _ => Overlays.Count > 0);
         CaptureChatDiagnosticsCommand = new RelayCommand(_ => CaptureChatDiagnostics());
-        ToggleOverlaysLockCommand = new RelayCommand(_ =>
+        ToggleOverlaysLockCommand = new RelayCommand(_ => ToggleAllOverlaysLock(), _ => Overlays.Count > 0);
+        TestAlertFollowCommand = new RelayCommand(_ => _alertService?.InjectTest(Chat.AlertType.Follow));
+        TestAlertSubCommand = new RelayCommand(_ => _alertService?.InjectTest(Chat.AlertType.Sub));
+        TestAlertRaidCommand = new RelayCommand(_ => _alertService?.InjectTest(Chat.AlertType.Raid));
+        CreateTestPollCommand = new RelayCommand(_ => { if (_pollService != null) _ = _pollService.CreateTestPollAsync(); });
+
+        // OBS scene auto-switching on alerts: same feed the overlays render,
+        // same obs-websocket transport the go-live/commands code uses. Created
+        // before the AlertService so an alert can never race a null service.
+        _autoSwitch = new ObsAutoSwitchService(
+            Config,
+            () => _obs is { IsConnected: true } ? _obs.GetCurrentProgramScene() : Task.FromResult<string?>(null),
+            SwitchObsSceneAsync);
+        _autoSwitch.Status += s => Application.Current?.Dispatcher.BeginInvoke(() =>
         {
-            foreach (var o in Overlays)
-                ToggleOverlayLock(o);
-        }, _ => Overlays.Count > 0);
+            ObsAutoSwitchStatusText = s;
+            Raise(nameof(ObsAutoSwitchStatusText));
+        });
+        Config.ObsAutoSwitch.PropertyChanged += (_, _) => ScheduleSave();
+
+        // Poll/prediction widget: Helix polling loop + state for the window.
+        _pollService = new PollService(Config);
+        _pollService.Update += state => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            PollStateChanged?.Invoke(state);
+        });
+        _pollService.Status += s => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            PollStatusText = s;
+            Raise(nameof(PollStatusText));
+        });
+        Config.PollWidget.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(PollWidgetConfig.Enabled))
+                _pollService.SetEnabled(Config.PollWidget.Enabled);
+            ScheduleSave();
+        };
+        if (Config.PollWidget.Enabled) PollStatusText = "poll widget starting...";
+        _pollService.SetEnabled(Config.PollWidget.Enabled);
+
         EnsureObsClient();
 
         foreach (var d in Config.Destinations) Destinations.Add(d);
@@ -1093,6 +1246,20 @@ public class MainViewModel : ObservableBase
         _commandRunner.OverlayLine = msg => OverlayChatLine?.Invoke(msg);
         SyncTwitchAuth();
         _commandRunner.SyncSources();
+
+        // Alerts (follows/subs/raids): one EventSub connection for every
+        // watched Twitch channel; alerts surface as plain text lines on the
+        // overlays and optionally in the OBS banner file.
+        _alertService = new AlertService(Config);
+        _alertService.Alert += e => Application.Current?.Dispatcher.BeginInvoke(() => OnAlertEvent(e));
+        _alertService.Status += s => Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            AlertStatusText = s;
+            Raise(nameof(AlertStatusText));
+        });
+        Config.Alert.PropertyChanged += (_, _) => _alertService.SyncChannels();
+        Chat.ChatAuthStore.TwitchChanged += () => _alertService.Nudge();
+        _alertService.SyncChannels();
 
         _autoSave = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
         _autoSave.Tick += (_, _) => Save();
@@ -1265,6 +1432,17 @@ public class MainViewModel : ObservableBase
         Save();
     }
 
+    // The single "lock everything" path - the button and the Ctrl+Alt+C/X
+    // hotkey both land here, so the poll widget's lock state can never
+    // diverge from the chat overlays (BUG-65).
+    public void ToggleAllOverlaysLock()
+    {
+        foreach (var o in Overlays)
+            ToggleOverlayLock(o);
+        Config.PollWidget.Locked = !Config.PollWidget.Locked;
+        Save();
+    }
+
     private void ExportServer()
     {
         var dialog = new OpenFolderDialog
@@ -1299,7 +1477,10 @@ public class MainViewModel : ObservableBase
             Config.SshUseKey,
             SshPassword,
             Config.SshKeyPath,
-            string.IsNullOrWhiteSpace(Config.RemotePath) ? "/opt/kat-relay" : Config.RemotePath.Trim());
+            // BUG-54: RemotePath is interpolated into single-quoted remote shell
+            // strings everywhere - a "'" from a hand-edited/shared config would
+            // break the quoting and inject commands. Never let one through.
+            string.IsNullOrWhiteSpace(Config.RemotePath) ? "/opt/kat-relay" : Config.RemotePath.Trim().Replace("'", ""));
     }
 
     private void Log(string message)
@@ -1390,25 +1571,33 @@ public class MainViewModel : ObservableBase
         }, ui);
     }
 
+    // BUG-60: LoginTwitch's Task.Run continuation saves off the UI thread while
+    // the debounced/autosave runs on it - serialize the whole save (config +
+    // secrets) so two writes can never interleave and drop one.
+    private readonly object _saveGate = new();
+
     public void Save()
     {
         Config.Destinations = Destinations.ToList();
         Config.Overlays = Overlays.ToList();
-        try
+        lock (_saveGate)
         {
-            ConfigStore.Save(Config);
-        }
-        catch
-        {
-            // Non-fatal.
-        }
-        try
-        {
-            SecretsStore.SaveFromConfig(EffectiveKeysPath, Config, _secrets);
-        }
-        catch
-        {
-            // Non-fatal.
+            try
+            {
+                ConfigStore.Save(Config);
+            }
+            catch
+            {
+                // Non-fatal.
+            }
+            try
+            {
+                SecretsStore.SaveFromConfig(EffectiveKeysPath, Config, _secrets);
+            }
+            catch
+            {
+                // Non-fatal.
+            }
         }
     }
 

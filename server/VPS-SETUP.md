@@ -36,7 +36,7 @@ Any Ubuntu 22.04/24.04 VPS works. Good cheap picks:
 
 Pick a region close to you **and** close to your platforms (Frankfurt for EU streaming,
 Ashburn for US). The toolkit's status bar tells you the traffic your destinations need -
-compare with the table above. Twitch+YouTube+Kick at 6 Mbps each is ~1.4 TB per 8-hour day.
+compare with the table above. Twitch+YouTube+Kick at 6 Mbps each is ~65 GB per 8-hour day (~2 TB/month at 8h daily).
 
 ## 2. Connect and install Docker (once)
 

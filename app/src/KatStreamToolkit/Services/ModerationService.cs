@@ -10,7 +10,8 @@ namespace KatStreamToolkit.Services;
 // print it straight into the overlay.
 public static class ModerationService
 {
-    private const string Helix = "https://api.twitch.tv/helix";
+    // Shared by every Helix caller (moderation + the EventSub alert client).
+    public const string Helix = "https://api.twitch.tv/helix";
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private static readonly Dictionary<string, string> BroadcasterIds = new(StringComparer.OrdinalIgnoreCase);
@@ -99,11 +100,15 @@ public static class ModerationService
     }
 
     // Shared request plumbing: auth headers + a readable error for the common
-    // failure cases (expired token, not a moderator, target user gone).
-    private static async Task<HttpResponseMessage?> SendAsync(HttpRequestMessage req, CancellationToken ct)
+    // failure cases (expired token, not a moderator, target user gone). The
+    // auth-parameterized overload is the single Helix HTTP path - the alert
+    // client reuses it instead of keeping its own diverging copy.
+    private static Task<HttpResponseMessage?> SendAsync(HttpRequestMessage req, CancellationToken ct) =>
+        SendAsync(req, ChatAuthStore.Twitch, ct);
+
+    public static async Task<HttpResponseMessage?> SendAsync(HttpRequestMessage req, TwitchAuthData? auth, CancellationToken ct)
     {
-        var auth = ChatAuthStore.Twitch;
-        if (auth == null) return null;
+        if (auth == null || string.IsNullOrWhiteSpace(ClientId)) return null;
         req.Headers.Add("Client-Id", ClientId);
         req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", auth.AccessToken);
         try
@@ -121,7 +126,9 @@ public static class ModerationService
     // in sync with the config field.
     public static string? ClientId { get; set; }
 
-    private static async Task<string?> DescribeAsync(HttpResponseMessage? resp, string action)
+    // Shared error describer: null on success, otherwise a readable message
+    // that includes Twitch's own body detail where it has one.
+    public static async Task<string?> DescribeAsync(HttpResponseMessage? resp, string action)
     {
         if (resp == null) return $"no Twitch connection for {action}";
         if (resp.IsSuccessStatusCode) return null;

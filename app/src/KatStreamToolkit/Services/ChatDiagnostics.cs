@@ -27,7 +27,13 @@ public static class ChatDiagnostics
         Line($"connected to irc.chat.twitch.tv:6697 (local port {((System.Net.IPEndPoint)tcp.Client.LocalEndPoint!).Port})");
 
         await using var ssl = new SslStream(tcp.GetStream());
-        await ssl.AuthenticateAsClientAsync("irc.chat.twitch.tv");
+        // BUG-62: without a token a never-completing TLS handshake hung this
+        // task forever - _diagBusy (reset in the caller's finally) stayed set
+        // and the button stayed dead until app restart. Tie the handshake to
+        // the same connect window as the TCP connect.
+        await ssl.AuthenticateAsClientAsync(
+            new System.Net.Security.SslClientAuthenticationOptions { TargetHost = "irc.chat.twitch.tv" },
+            connectCt.Token);
         Line("tls established");
 
         using var reader = new StreamReader(ssl, Encoding.UTF8);

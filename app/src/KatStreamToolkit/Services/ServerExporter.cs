@@ -28,8 +28,9 @@ public static class ServerExporter
         // not a guess.
         File.WriteAllText(Path.Combine(folder, "BUNDLE-VERSION"),
             ComputeBundleHash(cfg) + "\n" + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss") + " UTC\n");
-        // Keys live inside nginx.conf; keep them out of any git repo.
-        File.WriteAllText(Path.Combine(folder, ".gitignore"), "nginx.conf\n");
+        // Keys live inside nginx.conf (and the setup guide names hosts/paths
+        // meant for the owner only); keep both out of any git repo.
+        File.WriteAllText(Path.Combine(folder, ".gitignore"), "nginx.conf\nSETUP.md\n");
         ExportCustomBackgrounds(folder, cfg, log);
     }
 
@@ -222,7 +223,10 @@ public static class ServerExporter
         sb.AppendLine("## 5. Point OBS at it");
         sb.AppendLine("OBS -> Settings -> Stream -> Service: Custom...");
         sb.AppendLine($"- Server: `rtmp://{host}/live`");
-        sb.AppendLine($"- Stream key: `{cfg.Upstream.StreamName}` (this is your secret password - anything can push with it)");
+        // BUG-53: the push secret is deliberately kept out of config.json
+        // (SecretsData.UpstreamStreamName) - never write it into a doc file
+        // the bundle encourages sharing. OBS gets it from the toolkit.
+        sb.AppendLine("- Stream key: in the toolkit, Upstream section -> \"Stream name\" (this is your secret password - anything can push with it; do not share it or this file)");
         sb.AppendLine();
         sb.AppendLine("## Changing destinations later");
         sb.AppendLine("Edit destinations in the toolkit, then click 'Deploy to server' on the Deploy tab");

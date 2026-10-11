@@ -180,7 +180,7 @@ public static class RelayPreviewService
             else if (dest.IngestUrl.Trim().StartsWith("rtmp://", StringComparison.OrdinalIgnoreCase))
                 ingestHost = dest.IngestUrl.Trim()[7..].Split('/')[0];
 
-            if (!string.IsNullOrWhiteSpace(ingestHost))
+            if (!string.IsNullOrWhiteSpace(ingestHost) && DeployService.IsSafeIngestHost(ingestHost))
             {
                 string probe = Run(client,
                     $"sh -c 'docker exec kat-relay sh -c \"getent ahostsv4 {ingestHost} 2>/dev/null | head -1\" 2>/dev/null || sudo -n docker exec kat-relay sh -c \"getent ahostsv4 {ingestHost} 2>/dev/null | head -1\" 2>/dev/null'");
@@ -334,9 +334,9 @@ public static class RelayPreviewService
 
     public static void Shutdown()
     {
+        StopLivePreview();
         lock (Gate)
         {
-            StopLivePreviewLocked();
             try { _client?.Disconnect(); _client?.Dispose(); } catch { }
             _client = null;
             _target = null;
@@ -347,41 +347,36 @@ public static class RelayPreviewService
 
     private static CancellationTokenSource? _liveCts;
 
-    public static bool IsLivePreviewRunning => _liveCts != null;
+    public static bool IsLivePreviewRunning => Volatile.Read(ref _liveCts) != null;
 
     // Streams the destination's composed output as a continuous low-res MJPEG
     // feed (the exact ffmpeg graph, downscaled, ~12 fps) over the SSH command
     // channel. onFrame arrives on background threads; onStatus on this thread.
+    //
+    // BUG-49: these two are called ON THE UI THREAD (Output Studio property
+    // changes, preview toggle, close). Taking Gate here blocked the UI for as
+    // long as background work held it (30s health snapshot, 15s reconnect,
+    // 8s test encoders). They now never touch Gate: an Interlocked swap of the
+    // live CTS is the whole synchronization, and Cancel() runs outside it.
     public static void StartLivePreview(DeployTarget t, DestinationConfig dest, AppConfig cfg,
         Action<byte[]> onFrame, Action<string> onStatus)
     {
-        lock (Gate)
+        var cts = new CancellationTokenSource();
+        var ct = cts.Token;
+        var thread = new Thread(() => LiveLoop(t, dest, cfg, onFrame, onStatus, ct))
         {
-            StopLivePreviewLocked();
-            _liveCts = new CancellationTokenSource();
-            var ct = _liveCts.Token;
-            var thread = new Thread(() => LiveLoop(t, dest, cfg, onFrame, onStatus, ct))
-            {
-                IsBackground = true,
-                Name = "kat-live-preview",
-            };
-            thread.Start();
-        }
+            IsBackground = true,
+            Name = "kat-live-preview",
+        };
+        var previous = Interlocked.Exchange(ref _liveCts, cts);
+        try { previous?.Cancel(); } catch (ObjectDisposedException) { }
+        thread.Start();
     }
 
     public static void StopLivePreview()
     {
-        lock (Gate)
-        {
-            StopLivePreviewLocked();
-        }
-    }
-
-    private static void StopLivePreviewLocked()
-    {
-        var cts = _liveCts;
-        _liveCts = null;
-        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
+        var previous = Interlocked.Exchange(ref _liveCts, null);
+        try { previous?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     private static void LiveLoop(DeployTarget t, DestinationConfig dest, AppConfig cfg,
@@ -440,7 +435,12 @@ public static class RelayPreviewService
                             {
                                 inFrame = true;
                                 frame.SetLength(0);
-                                frame.Write(buffer, i - 1, 2);
+                                // BUG-61: write the marker explicitly - when the SOI
+                                // splits across two reads, i == 0 made buffer[i - 1]
+                                // a negative offset and the ArgumentOutOfRangeException
+                                // tore down the SSH channel and the preview encoder.
+                                frame.WriteByte(0xFF);
+                                frame.WriteByte(0xD8);
                             }
                         }
                         else

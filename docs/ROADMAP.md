@@ -77,6 +77,38 @@ Idea write-ups and Kats ratings (10 = add to roadmap) live in
   send"); TikTok chat is on hold. One-time setup: create a Twitch application
   in the dev console (redirect `http://localhost:8770/`) and paste its Client ID.
 
+- **Alerts (follows/subs/raids), text-only** - one EventSub websocket (Twitch
+  first) rides the existing OAuth login and watches every configured Twitch
+  channel. Alerts are deliberately PLAIN TEXT: a highlighted line in the chat
+  overlays (per-overlay toggle) - no banners, slides or fades that distract
+  mid-game. Optional OBS scroll banner: the toolkit writes a rolling
+  alerts.txt (recent N alerts, one per line) that OBS reads with a Text (GDI+)
+  source + Scroll filter. Settings live in the new Alerts sub-tab (master
+  toggle, per-type toggles, test buttons, recent-alerts list that doubles as
+  delivery diagnostics, banner file config). Needs one re-login to grant the
+  new scopes (follows/subs); raids need none. Kick/YouTube equivalents wait
+  for their OAuth logins; likes have no free API on Twitch/YouTube.
+- **Chat Overlays sub-tabs** - the Chat Overlays tab split into Overlays /
+  Channels & account / Alerts (and now Polls) sub-tabs (one level deep,
+  adopted as the rule for future tabs: sub-tabs only where a tab mixes
+  independent concerns).
+- **OBS auto-switching on alerts** - the alert feed can now DRIVE OBS, not
+  just display: per event type (raid/sub/follow) the toolkit switches to a
+  configured scene, holds it N seconds (0 = stay until you switch back), then
+  returns to whatever was on program before. Burst alerts (a pile of follows)
+  refresh the hold instead of stacking timers, and a scene you switch to by
+  hand is never overridden. Rides the obs-websocket link go-live and
+  !commands already use; test buttons trigger it exactly like real alerts.
+  Settings live in the Alerts sub-tab.
+- **Polls / predictions widget** - a small click-through window (locks with
+  Ctrl+Alt+C alongside the overlays) that shows YOUR active Twitch poll or
+  prediction as plain text bars: choice/vote counts, front-runner highlighted,
+  time left, hidden whenever nothing runs. Polled from the Helix APIs every
+  6s with the account login (poll/prediction read scopes - one re-login for
+  logins made before this), and a "Create a 30s test poll" button verifies
+  the whole path without building a poll in the dashboard by hand. Settings
+  live in the new Polls sub-tab; Kick/YouTube have no comparable public APIs.
+
 ## On hold - TikTok chat connector (DELAYED UNTIL FURTHER NOTICE)
 
 The connector code is written and wired in (`Chat/TikTokChatClient.cs`: Euler Stream
@@ -103,17 +135,12 @@ Standing decisions for everything in this phase (from Kats):
 
 ### Chat & overlays
 
-- **Moderation leftovers** - shared filter lists, a slow-mode UI toggle (the
-  Helix endpoint is already wired in `ModerationService`), and Kick/YouTube
-  OAuth logins so timeout/ban/delete and chat replies work on those platforms
-  too (the capability interfaces are in place; only the per-platform logins
-  and API calls are missing). The Twitch first half is shipped (see Shipped).
-- **Alert overlays** - follows / subs / raids / likes rendered as animated overlay
-  elements next to the chat lines (Twitch EventSub + Kick + YouTube equivalents; the
-  overlay window already exists, and the Twitch OAuth from the moderation work
-  carries the EventSub socket).
-- **Polls / predictions widget** - poll state fetched from the platform APIs and
-  rendered as an overlay element.
+- **Kick/YouTube OAuth logins** - timeout/ban/delete, chat replies and the
+  alert equivalents on those platforms (the capability interfaces are in
+  place; only the per-platform logins and API calls are missing). The Twitch
+  moderation set is complete: timeout/ban/delete from the overlay, the
+  slow-mode toggle in the mod menu, and the shared chat filter all shipped -
+  Kick/YouTube alert equivalents ride the same OAuth work.
 
 ### Relay / output engine
 
@@ -137,10 +164,9 @@ Standing decisions for everything in this phase (from Kats):
   pushed to every platform that supports it (Twitch/Kick/YouTube APIs).
 - **Key rotation reminders** - destinations record when their stream key was last
   rotated; the toolkit nags on a configurable interval (keys leak via screenshots).
-- **OBS auto-switching via the shipped obs-websocket link** - the transport is live
-  (see go-live orchestration in Shipped), and `!commands` can already flip scenes
-  (Commands tab); remaining work: automatic scene changes on chat events (raids,
-  follows) and automatic portrait-scene handling, hooking the alert overlays work.
+- **OBS portrait-scene handling** - the leftover half of the old auto-switching
+  bullet: automatic choreography for dedicated portrait scene sets, beyond the
+  per-event scene switching that shipped.
 - **Per-platform status board** - the phase-one live checks extended into a grid:
   relay-side health + platform-side "actually live" + viewer counts where an API
   provides them, per destination, in one board.

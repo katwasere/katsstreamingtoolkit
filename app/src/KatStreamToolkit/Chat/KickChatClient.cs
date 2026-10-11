@@ -17,6 +17,12 @@ public sealed class KickChatClient : IChatClient
     private readonly string? _manualChatroomId;
     private CancellationTokenSource? _cts;
 
+    // BUG-70: serializes every websocket send - two pings arriving close
+    // together used to race two concurrent SendAsync calls (WebSocket forbids
+    // concurrent sends; the second threw inside a discarded task and the pong
+    // was lost, so Pusher could drop the connection).
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+
     public string PlatformName => "Kick";
     public event Action<ChatMessage>? MessageReceived;
     public event Action<string>? StatusChanged;
@@ -120,7 +126,7 @@ public sealed class KickChatClient : IChatClient
 
             if (evt == "pusher:ping")
             {
-                _ = SendText(ws, "{\"event\":\"pusher:pong\",\"data\":{}}", ct);
+                _ = SendTextAsync(ws, "{\"event\":\"pusher:pong\",\"data\":{}}", ct);
                 return;
             }
             if (evt != "App\\Events\\ChatMessageEvent")
@@ -177,11 +183,25 @@ public sealed class KickChatClient : IChatClient
         }
     }
 
-    private static async Task SendText(System.Net.WebSockets.ClientWebSocket ws, string payload, CancellationToken ct)
+    // BUG-70: pongs used to be raw fire-and-forget sends; now every send is
+    // serialized through _sendLock and any failure is swallowed - a cancel
+    // between the state check and the send, or a closing socket, just loses
+    // one ping/pong (the read loop reconnects) instead of throwing inside a
+    // discarded task.
+    private async Task SendTextAsync(System.Net.WebSockets.ClientWebSocket ws, string payload, CancellationToken ct)
     {
-        if (ws.State != System.Net.WebSockets.WebSocketState.Open) return;
-        var bytes = Encoding.UTF8.GetBytes(payload);
-        await ws.SendAsync(bytes, System.Net.WebSockets.WebSocketMessageType.Text, true, ct);
+        try
+        {
+            await _sendLock.WaitAsync(ct);
+            try
+            {
+                if (ws.State != System.Net.WebSockets.WebSocketState.Open) return;
+                var bytes = Encoding.UTF8.GetBytes(payload);
+                await ws.SendAsync(bytes, System.Net.WebSockets.WebSocketMessageType.Text, true, ct);
+            }
+            finally { _sendLock.Release(); }
+        }
+        catch { }
     }
 
     public static async Task<string?> ResolveChatroomId(string channel, CancellationToken ct)

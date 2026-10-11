@@ -67,14 +67,34 @@ most home connections can't. A relay swaps that for exactly one upstream; the se
 (a 4 EUR box) does the multiplying. Bonus: your platform keys live on the server, not
 in OBS, so rotating keys never touches your scenes.
 
+## Why C#/WPF?
+
+The toolkit is a **Windows desktop app on purpose**:
+
+- **WPF covers exactly what the app needs natively** - chromeless always-on-top
+  transparent overlays, global hotkeys (`Ctrl+Alt+C`/`X`), a themeable dark UI,
+  and single-executable distribution (matching the planned portable build).
+- **The whole stack already exists as C# libraries** - SSH.NET (deploy, monitor,
+  live preview over SSH), HTTP/OAuth/JWT for the Twitch Helix, Kick and YouTube
+  APIs, websockets for obs-websocket and Twitch EventSub. No bridge code needed.
+- **Scope** - this stays a self-hosted single-user tool (see
+  `docs/IDEAS.md`), so a cross-platform/web stack would add complexity for
+  nothing; Windows + OBS on one PC is the supported setup (second-PC OBS is
+  explicitly post-release).
+
+The relay side is deliberately *not* C#: it's nginx-rtmp + ffmpeg in Docker,
+because battle-tested streaming servers beat anything an app could embed.
+
 ## Status
 
 - Working: relay generation + export, Twitch/Kick/YouTube chat overlays,
   Twitch account login (OAuth): chat replies, `!commands` with OBS scene
   switching, timeout/ban/delete + slow mode from the overlay - Kick/YouTube
   stay read-only until their own OAuth work, portrait renditions (crop +
-  blurred), traffic estimator, hotkey lock/unlock.
-- On the roadmap: alert overlays, live status indicators - see
+  blurred), traffic estimator, hotkey lock/unlock, alerts (follows/subs/raids)
+  as overlay lines + OBS scroll banner + automatic OBS scene changes per
+  event, and a poll/prediction widget for your active Twitch poll.
+- On the roadmap: Kick/YouTube logins, title/category sync - see
   `docs/ROADMAP.md`. TikTok chat is written but DELAYED until further notice
   (cannot be tested right now due to quirks in TikTok's streaming setup);
   TikTok video needs none of it and works today.

@@ -77,7 +77,10 @@ public partial class OutputStudio : UserControl
             _liveTimer?.Stop();
             StopServerPoll();
             _serverTimer?.Stop();
-            RelayPreviewService.Shutdown();
+            // Shutdown() disposes the shared SSH session under the service Gate,
+            // which background work can hold for tens of seconds - never block
+            // the UI on it (BUG-49).
+            Task.Run(() => RelayPreviewService.Shutdown());
         };
         _loaded = true;
     }
@@ -957,13 +960,18 @@ public partial class OutputStudio : UserControl
 
         _liveDest = dest;
         _liveFrames = 0;
+        Interlocked.Exchange(ref _lastLiveFrameTicks, 0);
         ServerWaitingText.Text = "starting the live preview on the relay...";
         ServerWaitingText.Visibility = Visibility.Visible;
         RelayPreviewService.StartLivePreview(target, dest, _vm.Config,
             OnLiveFrame,
             status => Dispatcher.BeginInvoke(() =>
             {
-                if (_liveFrames == 0)
+                // BUG-64: the status used to freeze at the first frame forever -
+                // once frames had arrived, feed deaths were painted over with
+                // the stale "LIVE" label. Statuses show again once no frame has
+                // arrived for a while.
+                if (!LiveFresh)
                 {
                     ServerWaitingText.Text = status;
                     ServerWaitingText.Visibility = Visibility.Visible;
@@ -985,6 +993,7 @@ public partial class OutputStudio : UserControl
     private void OnLiveFrame(byte[] jpeg)
     {
         _liveFrames++;
+        Interlocked.Exchange(ref _lastLiveFrameTicks, DateTime.UtcNow.Ticks);
         Dispatcher.BeginInvoke(() =>
         {
             try
@@ -1007,6 +1016,21 @@ public partial class OutputStudio : UserControl
         });
     }
 
+    // BUG-64: the box must not keep a dead feed's last frame labelled LIVE.
+    // After this long without a live MJPEG frame, the snapshot fallback and
+    // the honest status come back.
+    private long _lastLiveFrameTicks;
+    private static readonly TimeSpan LiveStaleAfter = TimeSpan.FromSeconds(12);
+
+    private bool LiveFresh
+    {
+        get
+        {
+            long ticks = Interlocked.Read(ref _lastLiveFrameTicks);
+            return ticks != 0 && DateTime.UtcNow.Ticks - ticks < LiveStaleAfter.Ticks;
+        }
+    }
+
     private void StopServerPoll()
     {
         _serverTimer?.Stop();
@@ -1016,7 +1040,7 @@ public partial class OutputStudio : UserControl
 
     private void PollServerSnapshot()
     {
-        if (_liveFrames > 0) return; // live stream is delivering - no fallback needed
+        if (LiveFresh) return; // live stream is delivering - no fallback needed
         if (_vm is null || _watchedDestination is null) return;
         if (Interlocked.CompareExchange(ref _serverBusy, 1, 0) != 0) return;
         var dest = _watchedDestination;

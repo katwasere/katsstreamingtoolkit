@@ -140,6 +140,7 @@ public class AppConfig : ObservableBase
     private bool _obsEnabled;
     private string _obsWebSocketUrl = "ws://127.0.0.1:4455";
     private string _twitchClientId = "";
+    private AlertConfig _alert = new();
 
     public UpstreamConfig Upstream { get => _upstream; set => Set(ref _upstream, value); }
     public MyChannelsConfig MyChannels { get => _myChannels; set => Set(ref _myChannels, value); }
@@ -175,6 +176,72 @@ public class AppConfig : ObservableBase
     // Twitch application Client ID (public, not a secret) - required once for
     // the account login that powers chat send, !commands and moderation.
     public string TwitchClientId { get => _twitchClientId; set => Set(ref _twitchClientId, value); }
+
+    // Follows/subs/raids (see AlertConfig). Persists with the rest of the config.
+    public AlertConfig Alert { get => _alert; set => Set(ref _alert, value); }
+
+    // The shared chat filter (see ModerationConfig). Persists with the config.
+    public ModerationConfig Moderation { get => _moderation; set => Set(ref _moderation, value); }
+    private ModerationConfig _moderation = new();
+
+    // Automatic OBS scene changes on alert events (see ObsAutoSwitchConfig).
+    public ObsAutoSwitchConfig ObsAutoSwitch { get => _obsAutoSwitch; set => Set(ref _obsAutoSwitch, value); }
+    private ObsAutoSwitchConfig _obsAutoSwitch = new();
+
+    // The poll/prediction widget (see PollWidgetConfig).
+    public PollWidgetConfig PollWidget { get => _pollWidget; set => Set(ref _pollWidget, value); }
+    private PollWidgetConfig _pollWidget = new();
+}
+
+// One OBS scene change per alert type, driven by the alert feed. Scene names
+// must match OBS exactly (same convention as the Commands tab). Hold 0 means
+// stay on the scene until switched back manually.
+public class ObsAutoSwitchConfig : ObservableBase
+{
+    private bool _enabled;
+    private string _raidScene = "";
+    private int _raidHoldSeconds = 30;
+    private string _subScene = "";
+    private int _subHoldSeconds = 10;
+    private string _followScene = "";
+    private int _followHoldSeconds = 10;
+
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+
+    public string RaidScene { get => _raidScene; set => Set(ref _raidScene, value.Trim()); }
+    public string SubScene { get => _subScene; set => Set(ref _subScene, value.Trim()); }
+    public string FollowScene { get => _followScene; set => Set(ref _followScene, value.Trim()); }
+
+    public int RaidHoldSeconds { get => _raidHoldSeconds; set => Set(ref _raidHoldSeconds, Math.Clamp(value, 0, 600)); }
+    public int SubHoldSeconds { get => _subHoldSeconds; set => Set(ref _subHoldSeconds, Math.Clamp(value, 0, 600)); }
+    public int FollowHoldSeconds { get => _followHoldSeconds; set => Set(ref _followHoldSeconds, Math.Clamp(value, 0, 600)); }
+}
+
+// The on-screen poll/prediction widget: one small click-through window showing
+// the broadcaster's active Twitch poll or prediction (plain text bars, same
+// no-distraction philosophy as the chat overlays). Needs the Twitch login.
+public class PollWidgetConfig : ObservableBase
+{
+    private bool _enabled;
+    private bool _showPredictions = true;
+    private bool _locked;
+    private double _x;
+    private double _y;
+    private double _width = 340;
+    private double _fontSize = 14;
+
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+
+    // Predictions render when no poll is running; off = polls only.
+    public bool ShowPredictions { get => _showPredictions; set => Set(ref _showPredictions, value); }
+
+    // Locked = click-through (Ctrl+Alt+C toggles it together with the overlays).
+    public bool Locked { get => _locked; set => Set(ref _locked, value); }
+
+    public double X { get => _x; set => Set(ref _x, value); }
+    public double Y { get => _y; set => Set(ref _y, value); }
+    public double Width { get => _width; set => Set(ref _width, Math.Clamp(value, 180, 800)); }
+    public double FontSize { get => _fontSize; set => Set(ref _fontSize, Math.Clamp(value, 8, 48)); }
 }
 
 // One toolkit-handled !command: reply in chat and/or switch an OBS scene.
@@ -196,6 +263,44 @@ public class CommandConfig : ObservableBase
     // When on, firing the command shows the reply (or who used it) as a "bot"
     // line in the chat overlays.
     public bool ShowOnOverlay { get => _showOnOverlay; set => Set(ref _showOnOverlay, value); }
+}
+
+// Alert settings (global - alerts are per-channel, not per-overlay). Overlays
+// render alerts as PLAIN TEXT lines: no animations, they would be distracting
+// while playing. The OBS banner file feeds a Text source + Scroll filter.
+public class AlertConfig : ObservableBase
+{
+    private bool _enabled = true;
+    private bool _showFollows = true;
+    private bool _showSubs = true;
+    private bool _showRaids = true;
+    private bool _bannerEnabled;
+    private string _bannerFilePath = "";
+    private int _bannerMaxLines = 10;
+
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+    public bool ShowFollows { get => _showFollows; set => Set(ref _showFollows, value); }
+    public bool ShowSubs { get => _showSubs; set => Set(ref _showSubs, value); }
+    public bool ShowRaids { get => _showRaids; set => Set(ref _showRaids, value); }
+
+    // Rolling text file for OBS (empty path = toolkit folder / alerts.txt).
+    public bool BannerEnabled { get => _bannerEnabled; set => Set(ref _bannerEnabled, value); }
+    public string BannerFilePath { get => _bannerFilePath; set => Set(ref _bannerFilePath, value); }
+    public int BannerMaxLines { get => _bannerMaxLines; set => Set(ref _bannerMaxLines, Math.Clamp(value, 1, 50)); }
+}
+
+// The shared chat filter (one list for every overlay): chat lines containing
+// any of these words or phrases are dropped before they render - slurs and
+// spam never reach the stream capture. Plain config, not secrets.
+public class ModerationConfig : ObservableBase
+{
+    private bool _enabled;
+    private string _bannedWords = "";
+
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+
+    // One word or phrase per line (edited in a multiline box).
+    public string BannedWords { get => _bannedWords; set => Set(ref _bannedWords, value); }
 }
 
 // One active watchdog alarm, shown in the red banner. Id is stable per condition
@@ -346,6 +451,10 @@ public class OverlayConfig : ObservableBase
     private int _maxMessages = 30;
     private bool _locked;
     private bool _isVisible = true;
+    private bool _showAlerts = true;
+    private string _chatFontFamily = "Segoe UI";
+    private string _chatTextColor = "#EEEEEE";
+    private string _alertColor = "#FFD75E";
 
     public Guid Id { get => _id; set => Set(ref _id, value); }
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -364,4 +473,29 @@ public class OverlayConfig : ObservableBase
     public int MaxMessages { get => _maxMessages; set => Set(ref _maxMessages, Math.Clamp(value, 5, 200)); }
     public bool Locked { get => _locked; set => Set(ref _locked, value); }
     public bool IsVisible { get => _isVisible; set => Set(ref _isVisible, value); }
+
+    // Alert events (follows/subs/raids) appear as plain text lines in this
+    // overlay. The OBS banner file is unaffected by this toggle.
+    public bool ShowAlerts { get => _showAlerts; set => Set(ref _showAlerts, value); }
+
+    // Overlay look: one font family for the whole overlay (chat + alerts),
+    // and the two text colors. Hex strings ("#RRGGBB"); an invalid value
+    // falls back to the default at render time, so half-typed input is safe.
+    public string ChatFontFamily
+    {
+        get => _chatFontFamily;
+        set => Set(ref _chatFontFamily, string.IsNullOrWhiteSpace(value) ? "Segoe UI" : value.Trim());
+    }
+
+    public string ChatTextColor
+    {
+        get => _chatTextColor;
+        set => Set(ref _chatTextColor, value.Trim());
+    }
+
+    public string AlertColor
+    {
+        get => _alertColor;
+        set => Set(ref _alertColor, value.Trim());
+    }
 }

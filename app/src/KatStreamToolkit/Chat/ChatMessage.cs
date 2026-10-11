@@ -17,12 +17,21 @@ public sealed class ChatMessage
     public string? MsgId { get; init; }
     public string? AuthorId { get; init; }
 
+    // Twitch's user-login tag (the actual account name) - display-name is
+    // localized and often != login, so self-echo detection must use this.
+    // Null on platforms that don't provide a login name.
+    public string? AuthorLogin { get; init; }
+
     // The author carries a broadcaster or moderator badge - moderation tools
     // must never act on these.
     public bool IsMod { get; init; }
 
     // The author is the channel broadcaster (subset of IsMod).
     public bool IsBroadcaster { get; init; }
+
+    // Non-null when this line is an alert (follow/sub/raid) rendered as plain
+    // text; ChatLineTextBlock styles it and moderation must skip it.
+    public AlertEvent? Alert { get; init; }
 
     public string PlatformTag => Platform switch
     {

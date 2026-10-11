@@ -49,7 +49,10 @@
                     <ItemsControl x:Name="Messages">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <local:ChatLineTextBlock Message="{Binding}" TextWrapping="Wrap" Margin="0,1" />
+                                <local:ChatLineTextBlock Message="{Binding}"
+                                                         TextColor="{Binding DataContext.ChatTextColor, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                         AlertColor="{Binding DataContext.AlertColor, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                         TextWrapping="Wrap" Margin="0,1" />
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

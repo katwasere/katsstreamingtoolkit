@@ -291,6 +291,16 @@ public sealed class ObsWebSocketClient : IDisposable
     public Task SetCurrentProgramScene(string sceneName, CancellationToken ct = default)
         => RequestAsync("SetCurrentProgramScene", new { sceneName }, ct);
 
+    // The scene OBS is showing right now - the auto-switch's "go back to what
+    // was on before the raid" needs this before it switches away.
+    public async Task<string?> GetCurrentProgramScene(CancellationToken ct = default)
+    {
+        var data = await RequestAsync("GetCurrentProgramScene", null, ct);
+        return data != null && data.Value.TryGetProperty("sceneName", out var name)
+            ? name.GetString()
+            : null;
+    }
+
     private static string Shorten(string s)
     {
         s = s.ReplaceLineEndings(" ");

@@ -122,8 +122,10 @@ public sealed class CommandRunner : IDisposable
         // of replies this runner itself just sent (loop protection for
         // responses that start with '!').
         var auth = ChatAuthStore.Twitch;
+        // BUG-56: display-name is localized and often != login - compare the
+        // user-login tag (falling back to the display name on older paths).
         if (auth != null && msg.Platform == "Twitch" &&
-            string.Equals(msg.Author, auth.Login, StringComparison.OrdinalIgnoreCase))
+            string.Equals(msg.AuthorLogin ?? msg.Author, auth.Login, StringComparison.OrdinalIgnoreCase))
         {
             lock (_gate)
             {

@@ -11,6 +11,7 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
     private readonly Dictionary<Guid, OverlayWindow> _overlayWindows = new();
+    private PollOverlayWindow? _pollWindow;
 
     public MainWindow()
     {
@@ -21,11 +22,30 @@ public partial class MainWindow : Window
         // confusion during debugging.
         Title += $"  -  build {File.GetLastWriteTime(GetType().Assembly.Location):yyyy-MM-dd HH:mm}";
         Loaded += OnLoaded;
+        Closing += OnClosing;
         Closed += (_, _) =>
         {
             _vm.Shutdown();
             _vm.Save();
         };
+    }
+
+    // The X button protects the stream: with chat overlays on screen or a
+    // stream live, closing MINIMIZES instead (an accidental click must not
+    // kill the overlays, and minimizing hides the screen from a capture).
+    // Closing again from the taskbar while minimized - or closing with
+    // nothing active - exits the app for real.
+    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        bool overlaysOnScreen = _overlayWindows.Values.Any(w => w.IsVisible) ||
+                                _pollWindow is { IsVisible: true };
+        if ((overlaysOnScreen || _vm.IsStreamActive) && WindowState != WindowState.Minimized)
+        {
+            e.Cancel = true;
+            WindowState = WindowState.Minimized;
+            return;
+        }
+        Application.Current.Shutdown();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -44,9 +64,54 @@ public partial class MainWindow : Window
             foreach (var window in _overlayWindows.Values)
                 window.InjectExternal(msg);
         });
+        _vm.OverlayAlertLine += msg => Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var window in _overlayWindows.Values)
+                window.InjectAlert(msg);
+        });
+
+        // The poll widget: one window for Config.PollWidget, hidden whenever
+        // no poll/prediction is running.
+        _vm.PollStateChanged += state => Dispatcher.BeginInvoke(() =>
+        {
+            if (!_vm.Config.PollWidget.Enabled) return;
+            EnsurePollWindow().Update(state);
+        });
+        _vm.Config.PollWidget.PropertyChanged += (_, args) => Dispatcher.BeginInvoke(() =>
+        {
+            if (args.PropertyName is nameof(PollWidgetConfig.Enabled))
+            {
+                if (_vm.Config.PollWidget.Enabled) EnsurePollWindow();
+                else ClosePollWindow();
+            }
+            else if (args.PropertyName is nameof(PollWidgetConfig.Locked))
+            {
+                _pollWindow?.ApplyLockStyle();
+            }
+        });
+        if (_vm.Config.PollWidget.Enabled)
+            EnsurePollWindow();
 
         foreach (var overlay in _vm.Overlays)
             OpenOverlay(overlay);
+    }
+
+    private PollOverlayWindow EnsurePollWindow()
+    {
+        // Created hidden ON PURPOSE: the service's initial "nothing running"
+        // update can be deduped away before we subscribe, so an eagerly shown
+        // window would sit there as an empty box. Update(state) shows it.
+        if (_pollWindow != null) return _pollWindow;
+        _pollWindow = new PollOverlayWindow(_vm.Config.PollWidget);
+        return _pollWindow;
+    }
+
+    private void ClosePollWindow()
+    {
+        if (_pollWindow == null) return;
+        var window = _pollWindow;
+        _pollWindow = null;
+        window.Close();
     }
 
     private void OpenOverlay(OverlayConfig overlay)
@@ -77,7 +142,10 @@ public partial class MainWindow : Window
             }
         };
         _overlayWindows[overlay.Id] = window;
-        window.Show();
+        // BUG-51: respect the saved visibility - Show() unconditionally
+        // resurrected an overlay saved with "Shown on screen" off on every
+        // app start (only the change handler did the right thing).
+        if (overlay.IsVisible) window.Show(); else window.Hide();
     }
 
     private void CloseOverlay(OverlayConfig overlay)
@@ -88,8 +156,10 @@ public partial class MainWindow : Window
 
     private void ToggleAllLocks()
     {
-        foreach (var overlay in _vm.Overlays)
-            _vm.ToggleOverlayLock(overlay);
+        // One code path for the hotkey and the button (BUG-65): the poll
+        // widget must never diverge from the chat overlays. Its lock style is
+        // applied by the PollWidget.PropertyChanged subscription.
+        _vm.ToggleAllOverlaysLock();
     }
 
     private void RegisterHotkey()
@@ -125,6 +195,7 @@ public partial class MainWindow : Window
     {
         var hwnd = new WindowInteropHelper(this).Handle;
         UnregisterHotKey(hwnd, HotkeyId);
+        UnregisterHotKey(hwnd, HotkeyIdAlias);
         base.OnClosed(e);
     }
 

@@ -38,9 +38,16 @@ public sealed class ChatEntry : IDisposable
 
     private void OnStatus(string status)
     {
-        Status = status;
         Action<string>[] subs;
-        lock (_subsGate) subs = _statusSubs.ToArray();
+        lock (_subsGate)
+        {
+            // Written under the same gate Subscribe snapshots in: a status that
+            // lands between "subscriber added" and "initial push" must win over
+            // the initial one (BUG-71 - "starting..." could overpaint a newer
+            // status on every subscribe).
+            Status = status;
+            subs = _statusSubs.ToArray();
+        }
         foreach (var sub in subs)
         {
             try { sub(status); }
@@ -50,12 +57,14 @@ public sealed class ChatEntry : IDisposable
 
     public IDisposable Subscribe(Action<ChatMessage> onMessage, Action<string> onStatus)
     {
+        string initial;
         lock (_subsGate)
         {
             _messageSubs.Add(onMessage);
             _statusSubs.Add(onStatus);
+            initial = Status; // any change after this reaches us via the list
         }
-        onStatus(Status);
+        onStatus(initial);
         return new Subscription(this, onMessage, onStatus);
     }
 

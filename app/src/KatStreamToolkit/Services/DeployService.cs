@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using KatStreamToolkit.Models;
 using Renci.SshNet;
 
@@ -343,6 +344,13 @@ public static class DeployService
         var dead = new List<string>();
         foreach (var host in hosts)
         {
+            // BUG-54: a non-hostname string (shell metacharacters) is never
+            // probed - the deploy fails naming it, like a dead host would.
+            if (!IsSafeIngestHost(host))
+            {
+                dead.Add(host);
+                continue;
+            }
             var (code, _) = Run(client, $"getent ahostsv4 {host} >/dev/null 2>&1");
             if (code != 0)
                 dead.Add(host);
@@ -356,9 +364,9 @@ public static class DeployService
         }
 
         throw new Exception(
-            "these enabled destinations use ingest hosts that do not resolve on the server: "
+            "these enabled destinations use ingest hosts that are invalid or do not resolve on the server: "
             + string.Join(", ", dead)
-            + " - fix the URL (some platform defaults are outdated) or disable the destination, otherwise nginx cannot start");
+            + " - fix the URL (hostnames are letters/digits/dots/dashes only; some platform defaults are outdated) or disable the destination, otherwise nginx cannot start");
     }
 
     public static string? IngestHost(string ingestUrl)
@@ -370,6 +378,17 @@ public static class DeployService
             return url["rtmp://".Length..].Split('/')[0];
         return null;
     }
+
+    // BUG-54: ingest hosts end up interpolated into remote shell commands
+    // (the getent probes here and in the preview diagnostics). Uri accepts
+    // RFC-3986 sub-delims, so a crafted rtmp://$(...) URL in a SHARED
+    // config.json could otherwise execute commands on the victim's VPS at the
+    // next deploy/test. Only plain DNS-shaped hostnames ever reach a shell.
+    private static readonly Regex SafeHostRegex = new("^[A-Za-z0-9.-]+$", RegexOptions.Compiled);
+    public static bool IsSafeIngestHost(string? host)
+        => !string.IsNullOrWhiteSpace(host)
+           && !host.StartsWith('-')
+           && SafeHostRegex.IsMatch(host);
 
     // SFTP cannot use sudo; on sudo-only servers (e.g. Oracle Linux's opc user) we
     // create the folder through the SSH session instead.

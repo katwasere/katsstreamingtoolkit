@@ -19,10 +19,16 @@ public static class TwitchAuthService
 
     // chat:read/edit for the IRC connection; the moderator scopes power
     // timeout/ban/delete/slow-mode from the overlay; channel:manage:broadcast
-    // is for title/category sync later.
+    // is for title/category sync later; moderator:read:followers +
+    // channel:read:subscriptions power the EventSub alert connection
+    // (follows/subs - a login made before alerts needs one re-login to add
+    // these scopes); the poll scopes power the poll/prediction widget and its
+    // test-poll button (same rule: one re-login grants them).
     public const string Scopes = "chat:read chat:edit " +
         "moderator:manage:banned_users moderator:manage:chat_messages " +
-        "moderator:manage:chat_settings channel:manage:broadcast";
+        "moderator:manage:chat_settings channel:manage:broadcast " +
+        "moderator:read:followers channel:read:subscriptions " +
+        "channel:read:polls channel:manage:polls channel:read:predictions";
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
 
@@ -157,7 +163,78 @@ public static class TwitchAuthService
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-        while (!linked.Token.IsCancellationRequested)
+        var firstCode = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task HandleClient(TcpClient client)
+        {
+            try
+            {
+                using (client)
+                {
+                    var stream = client.GetStream();
+                    var buffer = new byte[16 * 1024];
+                    var sb = new StringBuilder();
+                    string request = "";
+                    while (sb.Length < buffer.Length)
+                    {
+                        int read = await stream.ReadAsync(buffer, linked.Token);
+                        if (read <= 0) break;
+                        sb.Append(Encoding.ASCII.GetString(buffer, 0, read));
+                        int end = sb.ToString().IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                        if (end >= 0)
+                        {
+                            request = sb.ToString(0, end);
+                            break;
+                        }
+                    }
+                    // Answer the browser first so the tab does not hang.
+                    const string ok = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n" +
+                        "<html><body style='background:#16181d;color:#e6e8eb;font-family:sans-serif'>" +
+                        "<h2>Login received</h2><p>You can close this tab and return to the toolkit.</p></body></html>";
+                    var bytes = Encoding.ASCII.GetBytes(ok);
+                    await stream.WriteAsync(bytes, linked.Token);
+
+                    var lines = request.Split('\n');
+                    if (lines.Length == 0) return;
+                    var parts = lines[0].Split(' ');
+                    if (parts.Length < 2) return;
+                    // BUG-58: absolute-form targets ("GET http://localhost:8770/?...")
+                    // and garbage lines made new Uri throw and abort the whole
+                    // login with "Invalid URI" - drop the connection instead and
+                    // keep waiting for the real redirect.
+                    string queryPart;
+                    try { queryPart = new Uri("http://x" + parts[1]).Query; }
+                    catch (UriFormatException) { return; }
+                    var query = ParseQuery(queryPart);
+                    query.TryGetValue("state", out string? state);
+                    if (state != expectedState) return; // not our redirect - keep waiting
+                    query.TryGetValue("error", out string? error);
+                    if (error != null)
+                    {
+                        query.TryGetValue("error_description", out var desc);
+                        firstCode.TrySetException(new Exception($"Twitch denied the login: {error} ({desc})"));
+                        return;
+                    }
+                    query.TryGetValue("code", out string? code);
+                    if (!string.IsNullOrEmpty(code))
+                        firstCode.TrySetResult(code);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException
+                                          or ObjectDisposedException or SocketException)
+            {
+                // Per-connection failure (a preconnect hanging up, the wait
+                // being cancelled) - the accept loop keeps serving new ones.
+            }
+        }
+
+        // BUG-55: browsers open speculative preconnects (empty TCP connections)
+        // and the old inline read blocked the accept loop on the first one
+        // while the real redirect queued behind a never-accepted connection -
+        // "no login response arrived" despite a successful browser login.
+        // Every accepted client is handled concurrently; the first one that
+        // carries our state wins.
+        while (!linked.Token.IsCancellationRequested && !firstCode.Task.IsCompleted)
         {
             TcpClient client;
             try
@@ -166,52 +243,13 @@ public static class TwitchAuthService
             }
             catch (OperationCanceledException)
             {
-                return null;
+                break;
             }
-            using (client)
-            {
-                var stream = client.GetStream();
-                var buffer = new byte[16 * 1024];
-                var sb = new StringBuilder();
-                string request = "";
-                while (sb.Length < buffer.Length)
-                {
-                    int read = await stream.ReadAsync(buffer, linked.Token);
-                    if (read <= 0) break;
-                    sb.Append(Encoding.ASCII.GetString(buffer, 0, read));
-                    int end = sb.ToString().IndexOf("\r\n\r\n", StringComparison.Ordinal);
-                    if (end >= 0)
-                    {
-                        request = sb.ToString(0, end);
-                        break;
-                    }
-                }
-                // Answer the browser first so the tab does not hang.
-                const string ok = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n" +
-                    "<html><body style='background:#16181d;color:#e6e8eb;font-family:sans-serif'>" +
-                    "<h2>Login received</h2><p>You can close this tab and return to the toolkit.</p></body></html>";
-                var bytes = Encoding.ASCII.GetBytes(ok);
-                await stream.WriteAsync(bytes, linked.Token);
-
-                var lines = request.Split('\n');
-                if (lines.Length == 0) continue;
-                var parts = lines[0].Split(' ');
-                if (parts.Length < 2) continue;
-                var query = ParseQuery(new Uri("http://x" + parts[1]).Query);
-                query.TryGetValue("state", out string? state);
-                query.TryGetValue("error", out string? error);
-                if (state != expectedState) continue; // not our redirect - keep waiting
-                if (error != null)
-                {
-                    query.TryGetValue("error_description", out var desc);
-                    throw new Exception($"Twitch denied the login: {error} ({desc})");
-                }
-                query.TryGetValue("code", out string? code);
-                if (!string.IsNullOrEmpty(code))
-                    return code;
-            }
+            _ = HandleClient(client);
         }
-        return null;
+
+        var completed = await Task.WhenAny(firstCode.Task, Task.Delay(Timeout.Infinite, linked.Token));
+        return completed == firstCode.Task ? await firstCode.Task : null;
     }
 
     private static Dictionary<string, string> ParseQuery(string query)

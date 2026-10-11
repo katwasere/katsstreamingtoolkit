@@ -27,6 +27,9 @@ public partial class OverlayWindow : Window
         DataContext = _config;
         Messages.ItemsSource = _lines;
         SetBinding(FontSizeProperty, new System.Windows.Data.Binding("FontSize") { Source = _config });
+        // One font family for the whole overlay (chat + alerts); inherits
+        // down to every rendered line.
+        SetBinding(FontFamilyProperty, new System.Windows.Data.Binding("ChatFontFamily") { Source = _config });
 
         Left = _config.X;
         Top = _config.Y;
@@ -52,6 +55,12 @@ public partial class OverlayWindow : Window
 
         Closed += (_, _) =>
         {
+            // BUG-52: a running DispatcherTimer is rooted by the Dispatcher and
+            // its Tick lambda captures this - without stopping both timers the
+            // whole window (lines, subscriptions, visual tree) stayed alive and
+            // rendered status into a dead window for the rest of the session.
+            _statusTimer.Stop();
+            _saveDebounce.Stop();
             PersistGeometry();
             ReleaseSources();
         };
@@ -136,7 +145,14 @@ public partial class OverlayWindow : Window
             _sourceKeys.Add(spec.Key);
             _entries.Add(entry);
             _subscriptions.Add(entry.Subscribe(
-                msg => Dispatcher.BeginInvoke(() => AppendMessage(msg)),
+                msg => Dispatcher.BeginInvoke(() =>
+                {
+                    // The shared chat filter drops matched lines before they
+                    // render (toolkit lines - alerts, command replies, test
+                    // messages - enter via other paths and are never filtered).
+                    if (ChatFilter.ShouldHide(msg.Text)) return;
+                    AppendMessage(msg);
+                }),
                 status => Dispatcher.BeginInvoke(() => UpdateStatus(generation, spec.Platform, status))));
             _statuses[spec.Platform] = "starting...";
         }
@@ -221,6 +237,10 @@ public partial class OverlayWindow : Window
         if (msg == null) return;
         e.Handled = true;
 
+        // Alert lines (follow/sub/raid) carry no user to moderate - right-
+        // clicking one intentionally does nothing.
+        if (msg.Alert != null) return;
+
         // Never fail silently again: right-clicking an actual chat line always
         // shows SOMETHING (the old build just returned, which looked broken).
         if (!string.Equals(msg.Platform, "Twitch", StringComparison.OrdinalIgnoreCase))
@@ -298,6 +318,16 @@ public partial class OverlayWindow : Window
             menu.Items.Add(ModItem(msg, "Delete message", $"deleted {msg.Author}'s message",
                 (a, broadcasterId, ct) => ModerationService.DeleteMessageAsync(a, broadcasterId, msg.MsgId!, ct)));
         }
+
+        // Channel-level actions on the overlay's Twitch channel: slow mode.
+        // Always offered - the PATCH is idempotent, flipping an already-flipped
+        // switch just succeeds again, and the result line reports what happened.
+        menu.Items.Add(new Separator());
+        menu.Items.Add(ModItem(msg, "Slow mode: on (30s)", "slow mode ON - 30s between messages",
+            (a, broadcasterId, ct) => ModerationService.SetSlowModeAsync(a, broadcasterId, true, 30, ct)));
+        menu.Items.Add(ModItem(msg, "Slow mode: off", "slow mode OFF",
+            (a, broadcasterId, ct) => ModerationService.SetSlowModeAsync(a, broadcasterId, false, 30, ct)));
+
         if (!canModerateTarget)
         {
             // Say WHY instead of silently hiding the items.
@@ -359,6 +389,14 @@ public partial class OverlayWindow : Window
     // One external line (a fired !command shown on the overlays), from any
     // thread.
     public void InjectExternal(ChatMessage msg) => Dispatcher.BeginInvoke(() => AppendMessage(msg));
+
+    // One alert line (follow/sub/raid), from any thread. Honors the per-
+    // overlay toggle; the OBS banner file is unaffected by it.
+    public void InjectAlert(ChatMessage msg)
+    {
+        if (!_config.ShowAlerts) return;
+        InjectExternal(msg);
+    }
 
     // Fake chat lines injected straight into the list - verifies placement,
     // size, wrapping and colors without waiting for (or needing) real chat.

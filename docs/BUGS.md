@@ -444,6 +444,86 @@ Four stacked causes:
   container script is base64 piped into `docker exec -i kat-relay sh` - the same
   zero-quoting pattern the preview/test-encoder code already used.
 
+## BUG-44: Closing the app while overlays/streaming was either lethal or a ghost - [FIXED]
+
+- **Found**: 2026-10-10, Kat's verification of the alerts push.
+- **Symptom**: with a chat overlay active, clicking X on the main window left
+  the process running with NO taskbar entry (WPF's default
+  OnLastWindowClose + taskbar-less overlay windows) - the app looked like it
+  refused to close, and a relaunch hit the single-instance guard pointing at
+  a window that no longer existed.
+- **First fix** (OnMainWindowClose) overshot: it killed the overlays on an
+  accidental click - exactly what Kat feared.
+- **Final behavior** (deliberate, per Kat): with overlays on screen OR a
+  stream live (relay receiving the OBS feed, or an enabled destination
+  pushing/live on its platform), clicking X **minimizes** the main window -
+  an accidental click can never kill the overlays, and minimizing hides the
+  screen from a capture. Closing again from the taskbar while minimized - or
+  closing when nothing is active - exits the app for real
+  (`ShutdownMode="OnExplicitShutdown"` + the window's Closing handler;
+  `MainViewModel.IsStreamActive` provides the stream evidence).
+
+## BUG-45: Overlay chat and alerts had fixed font and colors - [FIXED, feature gap]
+
+- **Found**: 2026-10-10, same verification pass.
+- **Symptom**: the overlay rendered in Segoe UI with a hard-coded near-white
+  chat text and a hard-coded gold alert color - no way to match the stream's
+  look.
+- **Files**: `Models/Models.cs` (OverlayConfig), `Views/ChatLineTextBlock.cs`,
+  `Views/OverlayWindow.xaml(.cs)`, `MainWindow.xaml` (settings panel).
+- **Fix**: new per-overlay settings in the "Settings for:" panel: Font
+  (editable picker; any installed font name; applies to chat + alerts), Chat
+  text color and Alert color (hex). Invalid or half-typed hex falls back to
+  the built-in default at render time, so typing never breaks the overlay.
+  Author names keep their per-user hash colors by design.
+
+## BUG-46: The poll widget sat on screen as an empty box forever - [FIXED]
+
+- **Found**: 2026-10-11, first verification of the poll widget.
+- **Symptom**: with the widget enabled but no poll running, an empty bordered
+  box (the widget, width 340) stayed on screen indefinitely.
+- **Root cause**: `MainWindow.EnsurePollWindow` showed the window eagerly at
+  creation, but the service's first "nothing running" publish (state = null)
+  fired BEFORE the window subscribed to `PollStateChanged` - and
+  `PollService.Publish` dedupes by fingerprint, so every later null was
+  swallowed as "unchanged". The hide that would have removed the empty window
+  was never delivered; the first real poll would have fixed it, but there was
+  never one (the test poll 403'd, see BUG-47).
+- **Files**: `MainWindow.xaml.cs` (EnsurePollWindow),
+  `Views/PollOverlayWindow.xaml.cs` (Update).
+- **Fix**: the widget window is NEVER shown by its creator - it starts
+  hidden and only `Update(state)` with real content shows it (re-applying
+  the click-through style after Show, since a fresh hwnd loses
+  WS_EX_TRANSPARENT). Null state hides; disabled closes.
+
+## BUG-47: "Create test poll" 403 reported as a moderation error - [FIXED, message]
+
+- **Found**: same verification pass (screenshot).
+- **Symptom**: the Polls tab status said "create test poll: this account is
+  not a moderator of the channel (a login made before this feature needs one
+  re-login)" - the first half is `ModerationService.DescribeAsync`'s
+  moderation-specific 403 text and is wrong for polls: creating a poll on
+  your OWN channel 403s only because the token predates the poll scopes.
+- **File**: `Services/PollService.CreateTestPollAsync`.
+- **Fix**: 403 is handled before the shared describer with the poll-specific
+  message: "the login lacks poll permissions - log out and back in once
+  (Channels & account tab)".
+
+## BUG-48: Re-login did not fix the poll 403 - the channel is (likely) not an affiliate - [FIXED, diagnosis]
+
+- **Found**: 2026-10-11, second verification round: a fresh login STILL got
+  403 on "Create test poll".
+- **Root cause candidate**: Twitch polls/predictions exist only on **affiliate
+  and partner** channels - a non-affiliate channel 403s every polls call no
+  matter how fresh the token is, and the widget correctly stays hidden (there
+  is nothing to fetch), which looked like "the widget doesn't show up".
+- **Fix**: the toolkit now reads the logged-in account's `broadcaster_type`
+  (`/helix/users`, cached per login) and, for a non-affiliate channel, says so
+  plainly instead of hinting at scopes: "Twitch polls exist only on affiliate
+  and partner channels - this channel is neither...". The create-test-poll 403
+  also surfaces Twitch's own error body message when it is not a scope error,
+  so any other reason names itself.
+
 ## Second-pass summary
 
 | # | Area | Severity | Status |
@@ -669,3 +749,361 @@ should be the DOMINANT section and "Settings for:" the small one. The grid
 is now: left column = * (fills the window, min 420), right column = fixed
 500 for the compact settings panel; the two long hints moved under their
 rows so nothing clips at 500.
+
+---
+
+# Fourth-pass findings (2026-10-11, full rescan) - all [FIXED] same day
+
+Fourth full scan (services, chat clients, views/viewmodels, server docs; three
+independent review passes plus a spot-check of every claim against the code).
+Found during the poll-widget/OBS-auto-switch verification session. All items
+were fixed in the bugfix pass right after the scan; the Fix lines below were
+written during that pass.
+Severity is impact when it fires; "trigger" notes how easily that happens.
+
+### BUG-49. Output Studio can freeze the UI for 15-30s, repeatedly - [FIXED]
+- `RelayPreviewService` guards its SSH work with one shared `Gate`; the same
+  Gate is taken ON THE UI THREAD by `StartLivePreview`/`StopLivePreview`
+  (Output Studio property changes, preview toggles, `StopServerPoll` on close)
+  while background work holds it for long stretches: the 10s watchdog's
+  `FetchHealthSnapshot` (30s command timeout), `ConnectSsh` on a dead server
+  (15s), `StartTestEncoders` (~8s), the snapshot ladder (~8 sequential SSH
+  commands). With the relay unreachable, editing any field or closing Output
+  Studio freezes the UI until the background holder finishes, every monitor
+  tick.
+- **Files**: `Services/RelayPreviewService.cs` (Gate lock sites),
+  `Services/DeployService.cs` (ConnectSsh/FetchHealthSnapshot), call sites in
+  `Views/OutputStudio.xaml.cs`.
+- **Fix**: Start/StopLivePreview never touch Gate anymore - an
+  `Interlocked.Exchange` swap of the live CTS is the whole synchronization and
+  Cancel() runs outside it, so they are lock-free from the UI thread. The one
+  remaining Gate-holder reachable from the UI (`Shutdown()` in the Unloaded
+  handler, which disposes the shared SSH session) is marshaled through
+  `Task.Run`. The watchdog/go-live/status paths already ran their SSH work on
+  background threads (verified during the fix).
+
+### BUG-50. A non-standard author color can CRASH the whole app mid-stream - [FIXED]
+- `Views/ChatLineTextBlock.cs:91` builds the author brush with
+  `PlatformColors.FromHex(authorColor.Length == 7 ? authorColor : "#" + authorColor)`
+  and NO try/catch. `FromHex` only special-cases length 6; a 3-digit Twitch
+  color (`#F53` - a documented Twitch IRC quirk), a 5-char or 9-char value, or
+  Kick's free-form `color` field yields `##...` inputs that
+  `ColorConverter.ConvertFromString` rejects with FormatException - thrown
+  inside the dependency-property changed callback during binding, i.e. an
+  unhandled dispatcher exception. Note `BrushOrDefault` in the same file does
+  this correctly with try/catch; the author path just doesn't use it.
+- **Files**: `Views/ChatLineTextBlock.cs:88-92`, `Chat/ChatMessage.cs`
+  (`PlatformColors.FromHex`).
+- **Fix**: the author color is accepted only when it matches
+  `^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$`; anything else falls back to the
+  deterministic `HashColor`, exactly like the missing-color path already did.
+
+### BUG-51. An overlay saved with "Shown on screen" off reappears after restart - [FIXED]
+- `MainWindow.xaml.cs` `OpenOverlay` calls `window.Show()` unconditionally
+  (line ~145), overriding the ctor's `if (!_config.IsVisible) Hide()`. The
+  IsVisible *change* handler (line ~140) does the right thing - only the
+  initial open is wrong. Untick "Shown on screen" (`MainWindow.xaml:351`),
+  restart, the overlay is back on stream.
+- **Fix**: `OpenOverlay` now does `if (overlay.IsVisible) Show(); else Hide();`.
+
+### BUG-52. Closed overlay windows leak forever (status timer never stopped) - [FIXED]
+- `OverlayWindow` starts a 2s `_statusTimer` in the ctor; `Closed` only
+  persists geometry and releases sources. A running DispatcherTimer is rooted
+  by the Dispatcher and its Tick lambda captures `this`, so every removed
+  overlay (windows, chat history, subscription lists, visual tree) stays alive
+  and renders status into a dead window for the rest of the session.
+  `_saveDebounce` has the same issue benignly.
+- **Fix**: both timers are stopped in the `Closed` handler.
+- (Both review passes found this independently.)
+
+### BUG-53. The upstream stream key is written in PLAINTEXT into SETUP.md of every exported/deployed bundle - [FIXED]
+- `Services/ServerExporter.cs:225`: `` `Stream key: {cfg.Upstream.StreamName}` ``
+  - the push secret that `SecretsData.UpstreamStreamName` exists to keep out
+  of config.json, written into a doc file the bundle encourages sharing
+  (WinSCP drag-drop), and the bundle `.gitignore` only excludes `nginx.conf`.
+  Deploy also stages it under `%TEMP%\kat-relay-deploy` (that copy IS cleaned).
+- **Fix**: SETUP.md now says where the toolkit keeps the key instead of
+  printing it ("in the toolkit, Upstream section -> Stream name"), with an
+  explicit do-not-share note; the bundle `.gitignore` excludes SETUP.md too.
+
+### BUG-54. User-controlled ingest host interpolated UNQUOTED into server shell commands - [FIXED]
+- `Services/DeployService.cs:346`: `Run(client, $"getent ahostsv4 {host} ...")`
+  with `host = IngestHost(url)` unvalidated; same pattern inside
+  `RelayPreviewService` (getent under docker exec). `System.Uri` accepts RFC-3986
+  sub-delims in hosts, so a crafted `rtmp://$(...)...` ingest URL in a shared
+  config.json (explicitly designed to be shareable) could execute commands on
+  the victim's VPS at next deploy/test. Also `RemotePath` is interpolated into
+  single-quoted SSH strings where a `'` breaks quoting.
+- **Fix**: new `DeployService.IsSafeIngestHost` (`^[A-Za-z0-9.-]+$`, no leading
+  dash) - `ValidateIngestHosts` fails the deploy naming an unsafe host without
+  ever probing it, and the preview diagnostics skip the probe for one. Every
+  `DeployTarget` is built through `MainViewModel.BuildTarget`, which strips `'`
+  from RemotePath so the single-quoted remote strings can never be broken out
+  of.
+
+### BUG-55. Twitch OAuth login can hang on a silent browser preconnect - [FIXED]
+- `Services/TwitchAuthService.WaitForCodeAsync` accepts one connection at a
+  time and reads it inline. Chrome/Edge speculative preconnects open empty TCP
+  connections; the inline read then blocks the accept loop while the real
+  redirect waits on a connection that is never accepted -> "no login response
+  arrived" after 5 minutes despite a successful browser login. Intermittent,
+  browser-dependent.
+- **Fix**: every accepted client is handled concurrently (a task per
+  connection); the first request carrying the expected state wins via a
+  TaskCompletionSource, per-connection failures are swallowed and the accept
+  loop keeps serving.
+
+### BUG-56. The !command self-echo guard compares display-name to login - localized display names can loop a "!"-reply command - [FIXED]
+- `CommandRunner` suppresses echoes of its own replies only when
+  `msg.Author == auth.Login`, but `msg.Author` is Twitch's `display-name` tag
+  (localized; != login for many accounts). With such an account and a response
+  starting with `!` (e.g. `!so`), the bot's own reply re-triggers the command
+  every cooldown, spamming chat. `TwitchChatClient` never parses the
+  `user-login` tag.
+- **Files**: `Services/CommandRunner.cs` (~124-135),
+  `Chat/TwitchChatClient.cs` (tag parsing ~299).
+- **Fix**: TwitchChatClient parses the `user-login` tag into the new
+  `ChatMessage.AuthorLogin`; CommandRunner compares that (falling back to the
+  display name on older paths).
+
+### BUG-57. A viewer typing "RECONNECT" briefly kills the Twitch chat connection - [FIXED]
+- `Chat/TwitchChatClient.cs:129`: `line.Contains("RECONNECT")` matches the
+  whole raw line including PRIVMSG text and tags; any viewer posting
+  RECONNECT in caps throws the synthetic IOException and drops the
+  connection (3s reconnect, brief overlay gap).
+- **Fix**: new `IrcCommand` helper extracts the actual command token (after
+  the optional @tags and :prefix); only a real server `RECONNECT` command
+  triggers the reconnect.
+
+### BUG-58. Malformed OAuth redirect request line aborts the login with a confusing error - [FIXED]
+- `TwitchAuthService.cs:~206`: `new Uri("http://x" + parts[1])` throws
+  UriFormatException on absolute-form targets (`GET http://localhost:8770/?...`)
+  or garbage; the exception escapes the wait loop -> "login failed: Invalid
+  URI" instead of waiting for the real redirect.
+- **Fix**: the URI parse is wrapped in try/catch - a malformed request line
+  drops that connection and the wait continues.
+
+### BUG-59. Chat source keys are format-sensitive - the same channel can connect twice and !commands can double-fire - [FIXED]
+- `Chat/ChatSources.cs`: YouTube spec keys use the raw lowercased URL
+  (`youtube.com/watch?v=X` vs `youtu.be/X` vs `@handle` = three keys), Kick
+  keys differ between manual chatroom id and channel name. Two overlays with
+  different spellings of the SAME channel get two connections; the command
+  runner then sees every message twice - masked by the default 5s cooldown,
+  but with cooldown 0 commands (replies, OBS scene flips) execute twice.
+- **Fix**: YouTube keys canonicalize to the video id when the input carries
+  one (watch URL, youtu.be, bare 11-char id all collapse), otherwise to the
+  bare handle/name/path form; Kick keys by channel name whenever present (the
+  manual chatroom id is just another way into the same chatroom), id only for
+  id-only entries.
+
+### BUG-60. Concurrent Save() calls race on a fixed .tmp name - a dropped save can lose the rotated Twitch refresh token - [FIXED]
+- `ConfigStore.AtomicWrite` uses the fixed `path + ".tmp"`. `LoginTwitch`'s
+  Task.Run continuation calls `Save()` off the UI thread while the 15s
+  autosave/debounce save on the UI thread; two concurrent writes to the same
+  .tmp -> IOException -> swallowed by `Save()` -> that save is lost. Worst
+  case: the just-rotated refresh token (Twitch rotates on every use) is not
+  persisted -> forced re-login later, silently.
+- **Fix**: both halves - `AtomicWrite` uses a unique temp file per write (and
+  cleans it up on failure), and `MainViewModel.Save` serializes the whole
+  config+secrets save behind a lock, so concurrent savers can no longer
+  interleave.
+
+### BUG-61. MJPEG frame parser crashes when the JPEG SOI marker splits across two reads - [FIXED]
+- `Services/RelayPreviewService.cs:443`: `frame.Write(buffer, i - 1, 2)` -
+  when a channel read ends with `0xFF` and the next starts with `0xD8`, at
+  `i == 0` this writes at offset -1 -> ArgumentOutOfRangeException; the catch
+  tears down the SSH channel and kills the remote preview encoder. Costs a
+  full preview restart per occurrence.
+- **Fix**: the SOI marker is written as two explicit `WriteByte` calls - no
+  negative-offset slice exists anymore.
+
+### BUG-62. Chat diagnostics button can die until app restart (TLS handshake without timeout) - [FIXED]
+- `Services/ChatDiagnostics.cs:~30`:
+  `AuthenticateAsClientAsync("irc.chat.twitch.tv")` without a token - a TCP
+  connect that succeeds but a TLS handshake that never completes hangs the
+  capture forever; `_diagBusy` is only reset in the task's finally, so the
+  button stays disabled with no status.
+- **Fix**: the handshake runs on the `SslClientAuthenticationOptions` overload
+  tied to the same 10s connect window the TCP connect already uses.
+
+### BUG-63. One `null` string value in config.json silently resets the ENTIRE config - [FIXED]
+- `ConfigStore.Load` -> `ClearKnownDeadDefaultIngest` calls
+  `dest.IngestUrl.Trim()`; STJ assigns JSON `null` over the `""` default, the
+  NRE is swallowed by the per-file catch, so both `config.json` AND the `.bak`
+  "fail" -> `CreateDefaults()` -> all destinations/overlays/commands gone on
+  next start. Hand-edited configs are an anticipated scenario.
+- **Fix**: new `ConfigStore.NormalizeNullStrings` walks the freshly
+  deserialized graph (reflection, depth-capped, per-property try/catch so the
+  pass itself can never throw) and coalesces every null string back to ""
+  BEFORE any code - including the TikTok cleanup - touches the config.
+
+### BUG-64. Server preview shows a frozen frame labelled "LIVE" after the feed dies - [FIXED]
+- `Views/OutputStudio.xaml.cs`: once the MJPEG live preview delivered one
+  frame (`_liveFrames > 0`), the snapshot fallback and status updates are
+  permanently disabled for the session - when the stream ends or the SSH feed
+  stalls, the box keeps the last frame with "LIVE - this is what the platform
+  is receiving" indefinitely. False "all fine" in a diagnostic view.
+- **Fix**: the last live frame's timestamp is tracked; after 12s without a
+  frame the box stops trusting the picture - the snapshot fallback poll and
+  the honest status text resume, and live statuses display again. A frame
+  arriving flips it straight back to LIVE.
+
+### BUG-65. The "Toggle click-through on ALL overlays" button skips the poll widget - [FIXED]
+- `MainViewModel.ToggleOverlaysLockCommand` toggles only chat overlays; the
+  Ctrl+Alt+C hotkey (MainWindow.ToggleAllLocks) also toggles the poll widget.
+  After using the button, the widget's lock state diverges from the overlays -
+  a "click-through everything" click can leave a clickable widget swallowing
+  game clicks.
+- **Fix**: one code path - new `MainViewModel.ToggleAllOverlaysLock` toggles
+  every chat overlay AND `Config.PollWidget.Locked`; both the button command
+  and the hotkey route through it (the widget applies its lock style from the
+  existing PropertyChanged subscription, so the window handle is not needed).
+
+### BUG-66. The Ctrl+Alt+X hotkey alias is never unregistered - [FIXED]
+- `MainWindow.OnClosed` unregisters only `HotkeyId`; if C was taken and X
+  registered, the alias lingers. Harmless today (process exits right after)
+  but a hole in the teardown path.
+- **Fix**: `OnClosed` unregisters both ids.
+
+### BUG-67. Auto-switch "hold 0 = stay on the scene" is broken by a later different-type alert - [FIXED]
+- Raid with hold 0 promises "staying - switch back yourself"
+  (`ObsAutoSwitchService` keeps `_activeTarget` set). A later sub/follow alert
+  continues the chain, switches away, and after ITS hold returns program to
+  the original scene - yanking the streamer off the scene they asked to stay
+  on, with a contradictory status line.
+- **Fix** (semantic decision: honor the stay): a hold-0 switch enters "stay
+  mode". While the stay target is still on program, further alerts are
+  IGNORED (with a status line saying so); once the user has switched somewhere
+  by hand, the state is stale, is cleared, and the next alert starts a fresh
+  chain. Normal hold chains keep their documented "return to the original
+  scene" semantics unchanged.
+
+### BUG-68. Test-poll 403 path can block the UI thread (sync-over-async) - [FIXED]
+- `PollService.BodyMessage` uses `ReadAsStringAsync().GetAwaiter().GetResult()`
+  and `CreateTestPollAsync`'s continuations run on the dispatcher - a stalled
+  connection freezes the UI for the socket timeout in the rare non-scope 403
+  path.
+- **Fix**: `BodyMessageAsync` awaits the read; the caller awaits it.
+
+### BUG-69. Rapidly toggling the poll widget can run two poll loops briefly - [FIXED]
+- `PollService.SetEnabled(false)` cancels and nulls `_loop` while the old
+  `RunAsync` may still be inside a fetch; immediate re-enable starts a second
+  loop -> duplicate Helix polls and stale status overwrites for one cycle.
+  Self-resolving, cosmetic-to-minor.
+- **Fix**: a generation counter, bumped on every enable/disable; `Publish`
+  drops snapshots from an older generation, so an in-flight fetch of a dying
+  loop can never overwrite the fresh loop's state (disable also publishes its
+  hide with the current generation so the widget still goes away).
+
+### BUG-70. KickChatClient fire-and-forget pongs can collide or hit a closing socket - [FIXED]
+- `_ = SendText(...)` for pongs: two `pusher:ping`s close together -> the
+  second concurrent `SendAsync` throws inside a discarded task (pong lost,
+  Pusher may drop the connection); the `ct.Register(ws.Dispose)` can also
+  dispose between the state check and the send. Silent degradation only.
+- **Fix**: all sends serialize through a per-client `SemaphoreSlim`; the send
+  re-checks the socket state under the lock, and failures (cancel/closing
+  socket) are swallowed - a lost ping/pong just reconnects.
+
+### BUG-71. ChatEntry.Subscribe can deliver a stale initial status over a newer one - [FIXED]
+- `Chat/ChatHub.cs:~51-60`: the initial status is pushed outside the
+  subscriber lock; a client status fired in between paints "starting..." over
+  a newer status until the next change. Cosmetic, recurs on every subscribe.
+- **Fix**: snapshot-and-swap under the gate - `Status` is written under the
+  subscriber lock and Subscribe reads its initial value inside the same lock,
+  so any change after the snapshot reaches the subscriber via the list itself
+  and always wins.
+
+### BUG-72. Twitch send pacing is computed before the send gate - rapid commands land back-to-back - [FIXED]
+- `Chat/TwitchChatClient.cs:~230-247`: two `TrySendAsync` calls both read the
+  same `_lastSend`, both sleep, then serialize on `_sendGate` and fire ~0ms
+  apart - the intended spacing is not enforced (Twitch may silently drop).
+- **Fix**: pacing is enforced while HOLDING the send gate (with a writer
+  re-fetch after the wait, since the session can be replaced mid-sleep).
+
+### BUG-73. EventSub ReceiveAsync decodes UTF-8 per chunk - split multi-byte characters corrupt alert text - [FIXED]
+- `Chat/TwitchEventSubClient.cs:~221-236`: `sb.Append(Encoding.UTF8.GetString(...))`
+  per frame chunk; a multi-byte sequence split at the 16KB boundary decodes as
+  U+FFFD. Cosmetic, rare, never crashes.
+- **Fix**: bytes accumulate in a MemoryStream and are decoded once at
+  EndOfMessage (the same correct pattern the DeployService stream reader uses).
+
+### BUG-74. Typing in the OBS password field recreates the OBS client per keystroke - [FIXED]
+- `MainViewModel.ObsPassword` setter -> `RecreateObsClient()` per character:
+  websocket client + connect thread churn while typing, and old clients'
+  StatusChanged callbacks are not generation-guarded, so a stale
+  "connecting..." can overwrite a newer "connected" in the status light.
+  Possibly pre-existing; flag for the fix session to confirm.
+  Confirmed during the fix.
+- **Fix**: the recreate is debounced 500ms (explicit recreates - keys file
+  change, enable toggle - supersede the pending one immediately), and each
+  client captures its generation; a replaced client's status callbacks are
+  dropped.
+
+### BUG-75. VPS-SETUP.md bandwidth claim is ~20x off - [FIXED]
+- `server/VPS-SETUP.md:39`: "Twitch+YouTube+Kick at 6 Mbps each is ~1.4 TB per
+  8-hour day" - real math (the toolkit's own verified formula): 18 Mbps x
+  0.45 GB/h x 8 h = ~65 GB per 8-hour day (~1.9 TB/month at 8h/day). The
+  figure matches neither the day nor the month; readers may pick a too-small
+  VPS traffic plan.
+- **Fix**: corrected to "~65 GB per 8-hour day (~2 TB/month at 8h daily)".
+
+## Fourth-pass summary
+
+| # | Area | Severity | Status |
+|---|------|----------|--------|
+| BUG-49 | UI freeze: RelayPreviewService Gate held on UI thread | High | FIXED |
+| BUG-50 | Author-color parse can crash the app | High | FIXED |
+| BUG-51 | Hidden overlay reappears after restart | Medium | FIXED |
+| BUG-52 | Closed overlay windows leak (status timer) | Medium | FIXED |
+| BUG-53 | Upstream key plaintext in SETUP.md | Medium (security) | FIXED |
+| BUG-54 | Ingest host unquoted in server shell | Medium (security) | FIXED |
+| BUG-55 | OAuth login stalls on browser preconnect | Medium | FIXED |
+| BUG-56 | Self-echo guard vs display-name != login | Medium | FIXED |
+| BUG-57 | Chat text "RECONNECT" drops the connection | Low | FIXED |
+| BUG-58 | Malformed redirect line aborts OAuth | Low | FIXED |
+| BUG-59 | Format-sensitive chat keys -> double fires | Low-medium | FIXED |
+| BUG-60 | Save() race can drop the rotated refresh token | Low-medium | FIXED |
+| BUG-61 | MJPEG parser crash on split SOI marker | Low-medium | FIXED |
+| BUG-62 | Diagnostics button dies on hung TLS handshake | Low | FIXED |
+| BUG-63 | null string in config resets everything | Low | FIXED |
+| BUG-64 | Frozen preview frame labelled LIVE | Low-medium | FIXED |
+| BUG-65 | Click-through button skips poll widget | Low | FIXED |
+| BUG-66 | Hotkey alias never unregistered | Low | FIXED |
+| BUG-67 | Auto-switch hold-0 broken by later alert | Low | FIXED |
+| BUG-68 | Test-poll 403 blocks UI thread | Low | FIXED |
+| BUG-69 | Poll widget double loop on fast toggle | Low | FIXED |
+| BUG-70 | Kick pong sends can collide | Low | FIXED |
+| BUG-71 | Stale initial chat status overpaints | Low | FIXED |
+| BUG-72 | Twitch send pacing not enforced under burst | Low | FIXED |
+| BUG-73 | EventSub UTF-8 chunk corruption | Low | FIXED |
+| BUG-74 | OBS password typing churns the client | Low | FIXED |
+| BUG-75 | VPS-SETUP.md bandwidth math ~20x off | Low (doc) | FIXED |
+
+Fix-approach notes (fourth pass):
+
+- BUG-49: Start/StopLivePreview are lock-free (Interlocked CTS swap, cancel
+  outside the Gate); only `Shutdown()`'s client disposal still uses Gate and
+  that call is Task.Run'd from Output Studio's Unloaded. The watchdog, status
+  polling, go-live and the Output Studio snapshot/test-encoder paths were
+  verified to already run off the UI thread.
+- BUG-54: `IsSafeIngestHost` is the single choke point - the deploy's
+  `ValidateIngestHosts` probe, the preview's getent probe and (via
+  BuildTarget) the RemotePath quoting all go through validated values only.
+- BUG-60: unique temp file per AtomicWrite + `_saveGate` around MainViewModel.
+  Save; both halves together make a dropped save impossible.
+- BUG-63: NormalizeNullStrings runs before `ClearKnownDeadDefaultIngest` and
+  is itself exception-proof (per-property try/catch), so it can never become
+  the new reason Load falls back to defaults.
+- BUG-67: the "honor the stay" semantic was chosen - while the hold-0 target
+  is on program, later alerts are ignored with an explanatory status; the
+  documented return-to-original behavior of normal hold chains is untouched.
+
+Scan hygiene: every finding above was double-checked against the source (file
+and line verified, or explicitly marked "verify during fix"). Areas examined
+and found clean this pass: ChatHub refcounting, EventSub reconnect state
+machine, token handling (no secrets in logs/UI), SSH streaming/UTF-8 decode in
+DeployService, deploy temp-folder cleanup, AtomicWrite + .bak order,
+LiveCheckService, ChatFilter regex/locking, ObsAutoSwitchService gate/hold
+logic, poll widget event wiring/dedupe, WPF dispatcher marshaling on all
+service->UI paths, handler lifetimes (_hookedLayers, overlay channel
+handlers), SecretBox masking, and the ComboBox popup RelativeSource binding.

@@ -126,7 +126,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                                 try { _writer = writer; } finally { _sendGate.Release(); }
                                 StatusChanged?.Invoke(_activeToken != null ? "connected (logged in)" : "connected");
                             }
-                            if (line.Contains("RECONNECT"))
+                            if (IrcCommand(line) == "RECONNECT")
                                 throw new IOException("server requested reconnect");
                             if (line.Contains("Login authentication failed") ||
                                 line.Contains("Improperly formatted AUTH"))
@@ -224,15 +224,6 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
         text = text.Replace("\r", " ").Replace("\n", " ").Trim();
         if (text.Length == 0) return false;
 
-        // Pace sends: Twitch allows ~20 messages/30s for regular users (100 for
-        // mods) and rejects beyond that with no retry hint. One message per
-        // 1.2s is far inside the limit for a command bot.
-        var sinceLast = DateTime.UtcNow - _lastSend;
-        if (sinceLast < TimeSpan.FromMilliseconds(1200))
-        {
-            try { await Task.Delay(TimeSpan.FromMilliseconds(1200) - sinceLast); }
-            catch { return false; }
-        }
         try
         {
             await _sendGate.WaitAsync();
@@ -240,6 +231,22 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
             {
                 var w = _writer;
                 if (w == null) return false;
+
+                // Pace sends: Twitch allows ~20 messages/30s for regular users
+                // (100 for mods) and rejects beyond that with no retry hint.
+                // One message per 1.2s is far inside the limit for a command
+                // bot. The wait happens WHILE HOLDING the gate - computed
+                // before it, two concurrent sends both read the same _lastSend,
+                // both slept, then fired back-to-back ~0ms apart (BUG-72).
+                var sinceLast = DateTime.UtcNow - _lastSend;
+                if (sinceLast < TimeSpan.FromMilliseconds(1200))
+                {
+                    try { await Task.Delay(TimeSpan.FromMilliseconds(1200) - sinceLast); }
+                    catch { return false; }
+                    w = _writer; // the session may have been replaced while waiting
+                    if (w == null) return false;
+                }
+
                 await w.WriteLineAsync($"PRIVMSG #{_channel} :{text}");
                 _lastSend = DateTime.UtcNow;
                 return true;
@@ -250,6 +257,28 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
         {
             return false;
         }
+    }
+
+    // The IRC command token of a raw line (after the optional @tags and :prefix).
+    // BUG-57: matching "RECONNECT" against the whole line threw on any viewer
+    // typing it in caps - only the actual server command counts.
+    private static string IrcCommand(string line)
+    {
+        string rest = line;
+        if (rest.StartsWith('@'))
+        {
+            int sp = rest.IndexOf(' ');
+            if (sp < 0) return "";
+            rest = rest[(sp + 1)..];
+        }
+        if (rest.StartsWith(':'))
+        {
+            int sp = rest.IndexOf(' ');
+            if (sp < 0) return "";
+            rest = rest[(sp + 1)..];
+        }
+        int end = rest.IndexOf(' ');
+        return end < 0 ? rest : rest[..end];
     }
 
     private void ParseAndRaise(string line)
@@ -286,6 +315,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
         string author = nick;
         string? msgId = null;
         string? authorId = null;
+        string? authorLogin = null;
         bool isMod = false;
         bool isBroadcaster = false;
         if (tagsPart != null)
@@ -300,6 +330,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
                 else if (key == "color" && val.Length > 1) color = val;
                 else if (key == "id" && val.Length > 0) msgId = val;
                 else if (key == "user-id" && val.Length > 0) authorId = val;
+                else if (key == "user-login" && val.Length > 0) authorLogin = val;
                 else if (key == "badges")
                 {
                     if (val.Contains("broadcaster/"))
@@ -331,6 +362,7 @@ public sealed class TwitchChatClient : IChatClient, IChatSender, IChatStats
             IsAction = isAction,
             MsgId = msgId,
             AuthorId = authorId,
+            AuthorLogin = authorLogin,
             IsMod = isMod,
             IsBroadcaster = isBroadcaster,
         });
