@@ -1107,3 +1107,64 @@ LiveCheckService, ChatFilter regex/locking, ObsAutoSwitchService gate/hold
 logic, poll widget event wiring/dedupe, WPF dispatcher marshaling on all
 service->UI paths, handler lifetimes (_hookedLayers, overlay channel
 handlers), SecretBox masking, and the ComboBox popup RelativeSource binding.
+
+---
+
+## Fifth pass (2026-10-17) - over the phase-two wave
+
+Scope: quality ladder, audio processing, stream info, key rotation, status
+board, resource view, metrics chart, bandwidth watchdog, backups, server
+doctor. Harness re-run after fixes: 30/30.
+
+### BUG-76. Restoring a backup was silently undone at shutdown - [FIXED]
+- **Cause**: RestoreBackup wrote the restored config.json + keys file, but
+  MainWindow.Closed ALWAYS calls `_vm.Save()`, which re-serialized the OLD
+  in-memory config over both files during shutdown - the restore was a no-op
+  that looked like it worked. The 15s autosave and 1s edit debounce had the
+  same race if they landed between the writes and the shutdown.
+- **Files**: `MainViewModel` (new `SuppressSave` flag honored by `Save()` and
+  `ScheduleSave()`), `RestoreBackup` (sets it and stops `_autoSave`,
+  `_saveDebounce`, `_backupTimer` before the first write).
+- **Fix**: every save path stands down from the moment the restore confirms
+  until the restart reloads from disk; the flag is per-process, so the new
+  instance saves normally.
+
+### BUG-77. Ladder suffix sanitizer kept Unicode letters - [FIXED]
+- **Cause**: `char.IsLetterOrDigit` accepts ö/?/? etc., which then landed in
+  the stream key (`key-720p?`) and in the watchdog snapshot filename.
+- **Files**: `QualityVariantConfig.Suffix`.
+- **Fix**: `char.IsAsciiLetterOrDigit` - stream names stay platform-safe and
+  snapshot filenames stay boring.
+
+### BUG-78. Server doctor false-failed a healthy ufw firewall - [FIXED]
+- **Cause**: the check ran `ufw status | head -n 20`; a box with 20+ rules
+  cut the 1935 line off, so the doctor said "ufw is active but 1935 is not in
+  the list" and offered the ufw auto-fix for a firewall that was fine.
+- **Files**: `ServerDoctor.BuildScript` (no `head`), `RunAsync` (verdict now
+  needs BOTH "Status: active" and no 1935 rule; inactive ufw reads as
+  "absent/inactive", which filters nothing).
+- **Fix**: full status parsed in C#; the auto-fix button only appears for a
+  genuinely blocking active ufw.
+
+### BUG-79. Deleted ladder rung vouched for a future rung's frozen alarm - [FIXED]
+- **Cause**: the variant watchdog's `_variantHealthy` set kept a rung's
+  "was healthy" key after the rung was deleted. A replacement rung that came
+  up without a readable snapshot could then be declared FROZEN after two
+  ticks on the dead rung's evidence, with the main output perfectly fine.
+- **Files**: `MainViewModel.HandleVariantHealth` (the no-variants path now
+  clears every `<destId>:` key).
+- **Fix**: per-destination cleanup alongside the alarm clear.
+
+### BUG-80. Stream info 422 showed a raw Twitch error - [FIXED]
+- **Cause**: titles over 140 characters come back as HTTP 422 and fell into
+  the generic "apply failed (422)" message with a JSON blob.
+- **Files**: `StreamInfoService.ApplyAsync`.
+- **Fix**: 422 maps to "Twitch rejected the change - titles max out at 140
+  characters".
+
+### BUG-81. Doctor's ufw-fix button state set off the UI thread - [FIXED]
+- **Cause**: `UfwFixable` was assigned in the background continuation, so the
+  button's Visibility binding and CanExecute requery raced the doctor run.
+- **Files**: `MainViewModel.RunServerDoctorAsync`.
+- **Fix**: the flag is set inside the dispatcher block that installs the
+  checklist.

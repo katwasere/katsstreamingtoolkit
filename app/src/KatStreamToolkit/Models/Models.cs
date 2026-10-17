@@ -361,13 +361,15 @@ public class QualityVariantConfig : ObservableBase
     private int _fpsOverride;
 
     // Becomes part of the stream name and of the watchdog's snapshot file name:
-    // lowercase letters/digits only, so it is safe in both places.
+    // lowercase ASCII letters/digits only (BUG-77: IsLetterOrDigit alone kept
+    // Unicode letters like ö/Ж/中 - legal filenames, but a bad idea inside a
+    // stream key platforms must accept).
     public string Suffix
     {
         get => _suffix;
         set
         {
-            string clean = new(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).Take(24).ToArray());
+            string clean = new(value.Trim().ToLowerInvariant().Where(char.IsAsciiLetterOrDigit).Take(24).ToArray());
             Set(ref _suffix, clean);
         }
     }

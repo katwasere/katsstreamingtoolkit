@@ -80,6 +80,7 @@ public static class StreamInfoService
             401 => "the Twitch login expired - log in again (Chat Overlays tab)",
             403 => "the logged-in account is not the channel owner - Twitch only lets the broadcaster set title/category",
             404 => "Twitch rejected the category - search again and pick a suggestion",
+            422 => "Twitch rejected the change - titles max out at 140 characters",
             _ => $"apply failed ({(int)resp.StatusCode}): {detail}",
         };
     }

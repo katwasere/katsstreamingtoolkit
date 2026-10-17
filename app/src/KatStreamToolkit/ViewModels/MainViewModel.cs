@@ -517,6 +517,15 @@ public class MainViewModel : ObservableBase
             "Restore backup", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
+        // BUG-76: stand every save path down BEFORE writing - the autosave
+        // (15s), the edit debounce (1s), the backup scheduler and the
+        // close-time save in MainWindow.Closed would otherwise overwrite the
+        // restored files with the old in-memory state during shutdown.
+        SuppressSave = true;
+        _autoSave.Stop();
+        _saveDebounce.Stop();
+        _backupTimer.Stop();
+
         // Config first: the restored config's KeysFilePath decides where the
         // keys file belongs (default location vs a moved keys file).
         ConfigStore.AtomicWrite(ConfigStore.ConfigFilePath, payload.ConfigJson);
@@ -591,7 +600,6 @@ public class MainViewModel : ObservableBase
         var target = BuildTarget();
         log("[doctor] running the checklist over SSH + one port probe...");
         var checks = await ServerDoctor.RunAsync(target, Config);
-        UfwFixable = ServerDoctor.UfwState == ServerDoctor.UfwFirewall.Blocked;
         Application.Current?.Dispatcher.BeginInvoke(() =>
         {
             DoctorChecks.Clear();
@@ -601,6 +609,9 @@ public class MainViewModel : ObservableBase
             int fail = checks.Count(c => c.State == "fail");
             DoctorSummaryText = $"Server doctor: {ok} ok, {warn} warnings, {fail} failures ({checks.Count} checks)";
             Raise(nameof(DoctorSummaryText));
+            // BUG-81: set on the UI thread - the button's Visibility binds to
+            // it and CanExecute re-evaluates with the UI's requery.
+            UfwFixable = ServerDoctor.UfwState == ServerDoctor.UfwFirewall.Blocked;
         });
         foreach (var c in checks)
             log($"[doctor] {c.State.ToUpperInvariant(),-4} {c.Name}: {c.Detail}" + (c.Fix != null ? "  FIX: " + c.Fix : ""));
@@ -1240,10 +1251,15 @@ public class MainViewModel : ObservableBase
         var states = snap.Variants.TryGetValue(d.Id, out var vs) ? vs : null;
         if (states is not { Count: > 0 })
         {
-            // No variants configured (or none left): a stale alarm must not linger.
+            // No variants configured (or none left): a stale alarm must not
+            // linger, and neither may stale "was healthy" evidence - BUG-79:
+            // a rung deleted after one healthy tick otherwise vouches for a
+            // future rung's frozen detection.
             ClearAlarm("encvar:" + d.Id);
             _variantDownTicks.Remove(d.Id);
             _variantNoFrameTicks.Remove(d.Id);
+            var dead = _variantHealthy.Where(k => k.StartsWith(d.Id + ":", StringComparison.Ordinal)).ToList();
+            foreach (var k in dead) _variantHealthy.Remove(k);
             return;
         }
 
@@ -1663,6 +1679,7 @@ public class MainViewModel : ObservableBase
     // second while editing. The 15s auto-save timer is the safety net.
     private void ScheduleSave()
     {
+        if (SuppressSave) return;
         _saveDebounce.Stop();
         _saveDebounce.Start();
     }
@@ -2246,8 +2263,16 @@ public class MainViewModel : ObservableBase
     // secrets) so two writes can never interleave and drop one.
     private readonly object _saveGate = new();
 
+    // BUG-76: set by RestoreBackup - the files on disk ARE the desired state
+    // and the in-memory objects are the PAST, so every save path (autosave,
+    // debounce, the close-time save in MainWindow.Closed) must stand down
+    // until the restart reloads from disk. Without this, the shutdown save
+    // silently overwrote the freshly restored files with the old state.
+    public bool SuppressSave { get; private set; }
+
     public void Save()
     {
+        if (SuppressSave) return;
         Config.Destinations = Destinations.ToList();
         Config.Overlays = Overlays.ToList();
         lock (_saveGate)

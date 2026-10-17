@@ -69,13 +69,20 @@ public static class ServerDoctor
                 "sudo sh " + t.RemotePath + "/server-hardening.sh"));
 
         // Host firewall (ufw only - provider security lists are outside the box).
-        UfwState = ufw.Trim().StartsWith("no ufw", StringComparison.Ordinal) ? UfwFirewall.Absent
-            : ufw.Contains("1935", StringComparison.Ordinal) ? UfwFirewall.Open
+        // BUG-78: a blocked verdict needs BOTH "Status: active" and no 1935
+        // rule - an inactive ufw filters nothing and must read "absent".
+        string ufwTrimmed = ufw.Trim();
+        bool ufwActive = ufwTrimmed.Contains("Status: active", StringComparison.OrdinalIgnoreCase);
+        bool ufwHas1935 = ufwTrimmed.Contains("1935", StringComparison.Ordinal);
+        UfwState = !ufwActive ? UfwFirewall.Absent
+            : ufwHas1935 ? UfwFirewall.Open
             : UfwFirewall.Blocked;
         checks.Add(UfwState switch
         {
             UfwFirewall.Absent => new DoctorCheck("Host firewall (ufw)", "info",
-                "ufw not installed - nothing to check on the box (provider firewall is checked separately)", null),
+                ufwTrimmed.Contains("no ufw", StringComparison.Ordinal)
+                    ? "ufw not installed - nothing to check on the box (provider firewall is checked separately)"
+                    : "ufw present but inactive - it filters nothing (provider firewall is checked separately)", null),
             UfwFirewall.Open => new DoctorCheck("Host firewall (ufw)", "ok", "ufw active and 1935 allowed", null),
             _ => new DoctorCheck("Host firewall (ufw)", "fail", "ufw is active but 1935 is not in the list",
                 "sudo ufw allow OpenSSH && sudo ufw allow 1935/tcp   (or use the 'Apply ufw fix' button)"),
@@ -147,7 +154,10 @@ public static class ServerDoctor
             "echo '### MSS'",
             "iptables -t mangle -S OUTPUT 2>/dev/null | grep clamp-mss-to-pmtu | head -n1 || sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null || echo unknown",
             "echo '### UFW'",
-            "command -v ufw >/dev/null && ufw status 2>/dev/null | head -n 20 || echo 'no ufw'",
+            // BUG-78: no head - a box with 20+ rules cut the 1935 line off and
+            // the doctor flagged a healthy firewall as blocking. Full status;
+            // the C# parse only needs "active" + whether 1935 appears.
+            "command -v ufw >/dev/null && ufw status 2>/dev/null || echo 'no ufw'",
             "echo '### PROV'",
             "p=unknown; " +
             "curl -s -m 2 -H 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v1/instance/ 2>/dev/null | grep -q canonicalRegionName && p=oracle; " +
