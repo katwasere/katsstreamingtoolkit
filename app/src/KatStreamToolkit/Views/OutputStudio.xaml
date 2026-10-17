@@ -193,11 +193,15 @@
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
                             <TextBlock Text="Stream key:" Width="170" VerticalAlignment="Center" />
                             <local:SecretBox Width="220" SecretText="{Binding StreamKey}" />
+                            <TextBlock Text="{Binding KeyAgeText, Mode=OneWay}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                       FontSize="11" Foreground="#FF9AA0A8" />
+                            <Button Content="Key rotated today" Click="KeyRotatedToday_Click" Padding="8,2" Margin="10,0,0,0"
+                                    ToolTip="Record that you just rotated this destination's stream key - the rotation reminder starts counting from now" />
                         </StackPanel>
 
                         <Separator Margin="0,10" />
 
-                        <TextBlock Text="Encoding (portrait destinations; landscape is a untouched copy)" FontSize="13"
+                        <TextBlock Text="Encoding (the main output - portrait/custom destinations encode; a plain landscape destination copies OBS's stream)" FontSize="13"
                                    FontWeight="SemiBold" Margin="0,0,0,6" />
                         <StackPanel Orientation="Horizontal" Margin="0,2">
                             <TextBlock Text="Video bitrate (kbps):" Width="170" VerticalAlignment="Center" />
@@ -206,6 +210,15 @@
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
                             <TextBlock Text="Audio bitrate (kbps):" Width="170" VerticalAlignment="Center" />
                             <TextBox Width="80" Text="{Binding AudioBitrateKbps}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                            <CheckBox IsChecked="{Binding LoudnessNormalize}" Content="Normalize loudness to -16 LUFS (the streaming standard; one-pass loudnorm)" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                            <TextBlock Text="Volume trim (dB):" Width="170" VerticalAlignment="Center" />
+                            <TextBox Width="60" Text="{Binding VolumeTrimDb}" />
+                            <TextBlock Text="  -30 to +15; applied after normalization, also on ladder variants" FontSize="11" Foreground="#FF9AA0A8"
+                                       VerticalAlignment="Center" Margin="8,0,0,0" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
                             <TextBlock Text="Keyframe interval (s):" Width="170" VerticalAlignment="Center" />
@@ -238,6 +251,32 @@
                         </StackPanel>
                         <TextBlock Style="{StaticResource HintText}" Margin="174,2,0,0"
                                    Text="Added just before the output URL, e.g. -tune zerolatency. Passed to ffmpeg as-is." />
+
+                        <!-- Quality ladder: extra variants pushed beside the main output -->
+                        <TextBlock Text="Quality ladder (extra variants)" FontSize="13" FontWeight="SemiBold" Margin="0,10,0,4" />
+                        <TextBlock Style="{StaticResource HintText}" Margin="0,0,0,6" TextWrapping="Wrap"
+                                   Text="Extra downscaled copies of this output, pushed to the SAME ingest URL under the stream key + suffix (key abc123 + suffix 720p = abc123-720p) - for targets that serve several qualities. The main output above is untouched. Every variant costs the server one more encode + push." />
+                        <ItemsControl ItemsSource="{Binding Variants}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                                        <TextBlock Text="Suffix:" Width="52" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                        <TextBox Width="70" Text="{Binding Suffix, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="Appended to the stream key: letters/digits only. Duplicate suffixes are ignored." />
+                                        <TextBlock Text="Short side (p):" Width="88" VerticalAlignment="Center" Margin="12,0,4,0" />
+                                        <TextBox Width="50" Text="{Binding ShortSide}"
+                                                 ToolTip="720 = 1280x720 landscape / 720x1280 portrait; the long side keeps the main output's aspect" />
+                                        <TextBlock Text="Video kbps:" Width="72" VerticalAlignment="Center" Margin="12,0,4,0" />
+                                        <TextBox Width="60" Text="{Binding VideoBitrateKbps}" />
+                                        <TextBlock Text="FPS override:" Width="82" VerticalAlignment="Center" Margin="12,0,4,0" />
+                                        <TextBox Width="40" Text="{Binding FpsOverride}" ToolTip="0 = same fps as the main output" />
+                                        <Button Style="{StaticResource MiniButton}" Content="&#x2715;" Margin="8,0,0,0"
+                                                Click="VariantDelete_Click" ToolTip="Remove this variant" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <Button Content="Add variant" Click="VariantAdd_Click" Padding="8,2" HorizontalAlignment="Left" Margin="0,4,0,0" />
 
                         <Separator Margin="0,10" />
 

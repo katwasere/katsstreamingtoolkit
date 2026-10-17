@@ -188,7 +188,9 @@ public static class ServerExporter
         // The exported folder itself (not the app's current working directory).
         string localFolder = Path.GetFullPath(exportFolder);
         double upMbps = cfg.Upstream.VideoBitrateKbps / 1000.0 * 1.1;
-        double serverMbps = cfg.Destinations.Where(d => d.Enabled).Sum(d => (d.VideoBitrateKbps + d.AudioBitrateKbps) / 1000.0) * 1.1;
+        double serverMbps = cfg.Destinations.Where(d => d.Enabled)
+            .Sum(d => d.VideoBitrateKbps + d.AudioBitrateKbps
+                      + d.EffectiveVariants().Sum(v => v.VideoBitrateKbps + d.AudioBitrateKbps)) / 1000.0 * 1.1;
 
         sb.AppendLine("# KAT relay - server setup");
         sb.AppendLine();

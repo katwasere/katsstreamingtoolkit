@@ -13,6 +13,15 @@ public enum LiveState
     Offline,
 }
 
+// One live-check outcome: the state plus a viewer count where the platform's
+// public API hands one out (Twitch/Kick/TikTok do; YouTube has no free path).
+// Viewers is null whenever it cannot be known - never zero-faked.
+public sealed record LiveCheckResult(LiveState State, int? Viewers)
+{
+    public static readonly LiveCheckResult Unknown = new(LiveState.Unknown, null);
+    public static readonly LiveCheckResult Offline = new(LiveState.Offline, null);
+}
+
 // Phase-one "per-destination live checks": the relay only sees its own pushes -
 // whether a platform actually SHOWS the stream has to be asked on the platform
 // side. All checks are read-only, need no login, and degrade to Unknown on any
@@ -40,18 +49,21 @@ public static partial class LiveCheckService
     }
 
     public static async Task<LiveState> CheckAsync(Platform platform, string handle, CancellationToken ct) =>
+        (await CheckDetailedAsync(platform, handle, ct)).State;
+
+    public static Task<LiveCheckResult> CheckDetailedAsync(Platform platform, string handle, CancellationToken ct) =>
         platform switch
         {
-            Platform.Twitch => await CheckTwitch(handle, ct),
-            Platform.Kick => await CheckKick(handle, ct),
-            Platform.YouTube => await CheckYouTube(handle, ct),
-            Platform.TikTok => await CheckTikTok(handle, ct),
-            _ => LiveState.Unknown,
+            Platform.Twitch => CheckTwitch(handle, ct),
+            Platform.Kick => CheckKick(handle, ct),
+            Platform.YouTube => CheckYouTube(handle, ct),
+            Platform.TikTok => CheckTikTok(handle, ct),
+            _ => Task.FromResult(LiveCheckResult.Unknown),
         };
 
     // Twitch: anonymous GraphQL with the public web client id - the same query
     // style the Twitch web app itself uses; no account or OAuth needed.
-    private static async Task<LiveState> CheckTwitch(string login, CancellationToken ct)
+    private static async Task<LiveCheckResult> CheckTwitch(string login, CancellationToken ct)
     {
         try
         {
@@ -61,21 +73,22 @@ public static partial class LiveCheckService
             req.Content = new StringContent(
                 JsonSerializer.Serialize(new
                 {
-                    query = "query($l:String!){user(login:$l){stream{id}}}",
+                    query = "query($l:String!){user(login:$l){stream{id viewers}}}",
                     variables = new { l = login },
                 }), Encoding.UTF8, "application/json");
             using var resp = await Http.SendAsync(req, ct);
             if (!resp.IsSuccessStatusCode)
-                return LiveState.Unknown;
+                return LiveCheckResult.Unknown;
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             if (!doc.RootElement.TryGetProperty("data", out var data) ||
                 data.ValueKind != JsonValueKind.Object)
-                return LiveState.Unknown;
+                return LiveCheckResult.Unknown;
             if (!data.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.Object)
-                return LiveState.Offline;
-            return user.TryGetProperty("stream", out var stream) && stream.ValueKind == JsonValueKind.Object
-                ? LiveState.Live
-                : LiveState.Offline;
+                return LiveCheckResult.Offline;
+            if (!user.TryGetProperty("stream", out var stream) || stream.ValueKind != JsonValueKind.Object)
+                return LiveCheckResult.Offline;
+            int? viewers = stream.TryGetProperty("viewers", out var v) && v.TryGetInt32(out int n) && n >= 0 ? n : null;
+            return new LiveCheckResult(LiveState.Live, viewers);
         }
         catch (OperationCanceledException)
         {
@@ -83,12 +96,12 @@ public static partial class LiveCheckService
         }
         catch
         {
-            return LiveState.Unknown;
+            return LiveCheckResult.Unknown;
         }
     }
 
     // Kick: the same public channel endpoint the chat client uses for room ids.
-    private static async Task<LiveState> CheckKick(string slug, CancellationToken ct)
+    private static async Task<LiveCheckResult> CheckKick(string slug, CancellationToken ct)
     {
         try
         {
@@ -96,11 +109,14 @@ public static partial class LiveCheckService
             using var resp = await Http.GetAsync(
                 $"https://kick.com/api/v2/channels/{Uri.EscapeDataString(slug)}", ct);
             if (!resp.IsSuccessStatusCode)
-                return LiveState.Unknown;
+                return LiveCheckResult.Unknown;
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             if (!doc.RootElement.TryGetProperty("livestream", out var ls))
-                return LiveState.Unknown;
-            return ls.ValueKind == JsonValueKind.Object ? LiveState.Live : LiveState.Offline;
+                return LiveCheckResult.Unknown;
+            if (ls.ValueKind != JsonValueKind.Object)
+                return LiveCheckResult.Offline;
+            int? viewers = ls.TryGetProperty("viewer_count", out var v) && v.TryGetInt32(out int n) && n >= 0 ? n : null;
+            return new LiveCheckResult(LiveState.Live, viewers);
         }
         catch (OperationCanceledException)
         {
@@ -108,18 +124,19 @@ public static partial class LiveCheckService
         }
         catch
         {
-            return LiveState.Unknown;
+            return LiveCheckResult.Unknown;
         }
     }
 
     // YouTube: a channel resolves to a live video id exactly when it is live -
-    // the chat client uses the same resolver.
-    private static async Task<LiveState> CheckYouTube(string input, CancellationToken ct)
+    // the chat client uses the same resolver. Viewer counts need an API key
+    // (no free login-free path), so they stay unknown here.
+    private static async Task<LiveCheckResult> CheckYouTube(string input, CancellationToken ct)
     {
         try
         {
             string? videoId = await YouTubeChatClient.ResolveVideoId(input, ct);
-            return videoId != null ? LiveState.Live : LiveState.Offline;
+            return videoId != null ? new LiveCheckResult(LiveState.Live, null) : LiveCheckResult.Offline;
         }
         catch (OperationCanceledException)
         {
@@ -127,7 +144,7 @@ public static partial class LiveCheckService
         }
         catch
         {
-            return LiveState.Unknown;
+            return LiveCheckResult.Unknown;
         }
     }
 
@@ -136,7 +153,10 @@ public static partial class LiveCheckService
     [GeneratedRegex(@"""roomInfo"":\{""status"":\s*(\d+)")]
     private static partial Regex RoomStatusRegex();
 
-    private static async Task<LiveState> CheckTikTok(string handle, CancellationToken ct)
+    [GeneratedRegex(@"""userCount"":(\d+)")]
+    private static partial Regex UserCountRegex();
+
+    private static async Task<LiveCheckResult> CheckTikTok(string handle, CancellationToken ct)
     {
         try
         {
@@ -145,12 +165,16 @@ public static partial class LiveCheckService
                 $"https://www.tiktok.com/@{Uri.EscapeDataString(handle)}/live",
                 HttpCompletionOption.ResponseHeadersRead, ct);
             if (!resp.IsSuccessStatusCode)
-                return LiveState.Unknown;
+                return LiveCheckResult.Unknown;
             string html = await resp.Content.ReadAsStringAsync(ct);
             var m = RoomStatusRegex().Match(html);
             if (!m.Success)
-                return LiveState.Unknown;
-            return m.Groups[1].Value == "2" ? LiveState.Live : LiveState.Offline;
+                return LiveCheckResult.Unknown;
+            if (m.Groups[1].Value != "2")
+                return LiveCheckResult.Offline;
+            var u = UserCountRegex().Match(html);
+            int? viewers = u.Success && int.TryParse(u.Groups[1].Value, out int n) && n >= 0 ? n : null;
+            return new LiveCheckResult(LiveState.Live, viewers);
         }
         catch (OperationCanceledException)
         {
@@ -158,7 +182,7 @@ public static partial class LiveCheckService
         }
         catch
         {
-            return LiveState.Unknown;
+            return LiveCheckResult.Unknown;
         }
     }
 }

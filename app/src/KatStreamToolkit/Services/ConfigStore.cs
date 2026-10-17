@@ -26,6 +26,9 @@ public static class ConfigStore
 
     private static string FilePath => Path.Combine(DirectoryPath, "config.json");
 
+    // The live config file's path (backup/restore need the same file Load/Save use).
+    public static string ConfigFilePath => FilePath;
+
     public static AppConfig Load()
     {
         // A config that fails to parse (torn write, disk hiccup) falls back to

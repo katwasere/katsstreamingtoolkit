@@ -184,6 +184,28 @@ public class AppConfig : ObservableBase
     public ModerationConfig Moderation { get => _moderation; set => Set(ref _moderation, value); }
     private ModerationConfig _moderation = new();
 
+    private int _keyRotationReminderDays = 90;
+
+    // Key rotation nag interval in days (0 = off). A destination whose key was
+    // marked rotated longer ago than this (or never) feeds the Relay tab's
+    // key-rotation warning line.
+    public int KeyRotationReminderDays
+    {
+        get => _keyRotationReminderDays;
+        set => Set(ref _keyRotationReminderDays, Math.Clamp(value, 0, 3650));
+    }
+
+    private double _bandwidthMonthlyGb;
+
+    // Monthly traffic allowance for the server's outgoing streams (0 = off).
+    // The bandwidth watchdog compares the CONFIGURED outputs' projected monthly
+    // usage against this and warns while there is still time to react.
+    public double BandwidthMonthlyGb
+    {
+        get => _bandwidthMonthlyGb;
+        set => Set(ref _bandwidthMonthlyGb, Math.Clamp(value, 0, 1_000_000));
+    }
+
     // Automatic OBS scene changes on alert events (see ObsAutoSwitchConfig).
     public ObsAutoSwitchConfig ObsAutoSwitch { get => _obsAutoSwitch; set => Set(ref _obsAutoSwitch, value); }
     private ObsAutoSwitchConfig _obsAutoSwitch = new();
@@ -326,6 +348,40 @@ public sealed class WatchdogAlarm : ObservableBase
     public bool CanRestart { get; init; }
 }
 
+// One extra rung of a destination's quality ladder: the same composed picture,
+// downscaled and re-encoded with its own bitrate, pushed to the SAME ingest URL
+// under the stream key + suffix (e.g. key "abc123" + suffix "720p" ->
+// "abc123-720p"), for targets that serve several qualities. The destination's
+// main output keeps its own settings and is always on.
+public class QualityVariantConfig : ObservableBase
+{
+    private string _suffix = "720p";
+    private int _shortSide = 720;
+    private int _videoBitrateKbps = 4500;
+    private int _fpsOverride;
+
+    // Becomes part of the stream name and of the watchdog's snapshot file name:
+    // lowercase letters/digits only, so it is safe in both places.
+    public string Suffix
+    {
+        get => _suffix;
+        set
+        {
+            string clean = new(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).Take(24).ToArray());
+            Set(ref _suffix, clean);
+        }
+    }
+
+    // Target SHORT-side size in pixels (720 -> 1280x720 landscape, 720x1280
+    // portrait); the long side follows the main output's aspect ratio.
+    public int ShortSide { get => _shortSide; set => Set(ref _shortSide, Math.Clamp(value, 144, 2160)); }
+    public int VideoBitrateKbps { get => _videoBitrateKbps; set => Set(ref _videoBitrateKbps, Math.Clamp(value, 100, 20000)); }
+
+    // 0 = same fps as the main output (e.g. 1080p60 main + 720p30 fallback).
+    // Encoder preset and audio bitrate always follow the main output.
+    public int FpsOverride { get => _fpsOverride; set => Set(ref _fpsOverride, Math.Clamp(value, 0, 240)); }
+}
+
 public class DestinationConfig : ObservableBase
 {
     private Guid _id = Guid.NewGuid();
@@ -343,6 +399,8 @@ public class DestinationConfig : ObservableBase
     private int _fpsOverride;
     private string _extraArgs = "";
     private int _delaySeconds;
+    private bool _loudnessNormalize;
+    private double _volumeTrimDb;
     private double _cropX;
     private double _cropY;
     private double _cropW;
@@ -374,6 +432,37 @@ public class DestinationConfig : ObservableBase
     public string ExtraArgs { get => _extraArgs; set => Set(ref _extraArgs, value); }
     public int DelaySeconds { get => _delaySeconds; set => Set(ref _delaySeconds, Math.Clamp(value, 0, 600)); }
 
+    // Audio processing, per destination (the ladder variants inherit the same
+    // audio). Normalization targets the -16 LUFS streaming standard (one-pass
+    // loudnorm); trim is a plain gain in dB applied after it.
+    public bool LoudnessNormalize { get => _loudnessNormalize; set => Set(ref _loudnessNormalize, value); }
+    public double VolumeTrimDb { get => _volumeTrimDb; set => Set(ref _volumeTrimDb, Math.Round(Math.Clamp(value, -30, 15), 2)); }
+
+    private DateTimeOffset? _keyRotatedAtUtc;
+
+    // When the stream key was last rotated (the user tells the toolkit with the
+    // 'Key rotated today' button). Keys leak via screenshots; the toolkit nags
+    // once the age passes the configured interval. Null = never recorded.
+    public DateTimeOffset? KeyRotatedAtUtc
+    {
+        get => _keyRotatedAtUtc;
+        set { if (Set(ref _keyRotatedAtUtc, value)) Raise(nameof(KeyAgeText)); }
+    }
+
+    [JsonIgnore]
+    public string KeyAgeText => KeyRotatedAtUtc is null
+        ? "key never marked rotated"
+        : $"key rotated {KeyAgeWords(DateTime.UtcNow - KeyRotatedAtUtc.Value.UtcDateTime)} ago";
+
+    // Time passes without any property change: the 30s live-check tick calls
+    // this so card labels and ages stay truthful.
+    public void RefreshKeyAge() => Raise(nameof(KeyAgeText));
+
+    private static string KeyAgeWords(TimeSpan age) =>
+        age.TotalDays >= 1 ? $"{(int)age.TotalDays} days"
+        : age.TotalHours >= 1 ? $"{(int)age.TotalHours} h"
+        : $"{(int)age.TotalMinutes} min";
+
     // Custom portrait layout, all normalized (0-1) to survive upstream resolution changes.
     // Zeros mean "not touched yet" and fall back to the center-crop equivalent.
     public double CropX { get => _cropX; set => Set(ref _cropX, Math.Clamp(value, 0, 1)); }
@@ -388,6 +477,26 @@ public class DestinationConfig : ObservableBase
     // above still applies, so older configs behave exactly as before.
     private System.Collections.ObjectModel.ObservableCollection<OutputLayer> _layers = new();
     public System.Collections.ObjectModel.ObservableCollection<OutputLayer> Layers { get => _layers; set => Set(ref _layers, value); }
+
+    // Quality ladder: extra downscaled variants pushed beside the main output.
+    // Empty = single output, exactly like configs before the ladder existed.
+    private System.Collections.ObjectModel.ObservableCollection<QualityVariantConfig> _variants = new();
+    public System.Collections.ObjectModel.ObservableCollection<QualityVariantConfig> Variants { get => _variants; set => Set(ref _variants, value); }
+
+    // The variants that actually ship: suffix sanitized non-empty, duplicate
+    // suffixes ignored (first wins) - two rungs must never fight over one
+    // stream name / snapshot file.
+    public List<QualityVariantConfig> EffectiveVariants()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var list = new List<QualityVariantConfig>();
+        foreach (var v in Variants)
+        {
+            if (v.Suffix.Length == 0 || !seen.Add(v.Suffix)) continue;
+            list.Add(v);
+        }
+        return list;
+    }
 
     private VerifyLight _pushLight = VerifyLight.Unknown;
 
@@ -430,6 +539,20 @@ public class DestinationConfig : ObservableBase
             VerifyLight.Error => "live check failed",
             _ => "platform: unknown",
         };
+
+    // Live viewer count where the platform's public API hands one out
+    // (Twitch/Kick/TikTok; YouTube has no free path). Null = unknown, never 0.
+    private int? _viewers;
+
+    [JsonIgnore]
+    public int? Viewers
+    {
+        get => _viewers;
+        set { if (Set(ref _viewers, value)) Raise(nameof(ViewersText)); }
+    }
+
+    [JsonIgnore]
+    public string ViewersText => !Enabled || _viewers is null ? "" : $"{_viewers} viewers";
 }
 
 public class OverlayConfig : ObservableBase

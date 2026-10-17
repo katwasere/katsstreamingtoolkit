@@ -38,6 +38,15 @@ public class SecretsData
     // destination setting changes, without a server round trip.
     public string LastDeployedNginxHash { get; set; } = "";
     public DateTime LastDeployedAtUtc { get; set; }
+
+    // Toolkit backups: folder + interval are preferences, the passphrase is a
+    // real secret (the backup files are AES-GCM encrypted with it), and the
+    // timestamp drives the scheduler. All live here so a config.json shared or
+    // screenshotted never leaks where backups are or how to open them.
+    public string BackupFolder { get; set; } = "";
+    public int BackupIntervalHours { get; set; } = 24;
+    public string BackupPassphrase { get; set; } = "";
+    public DateTime LastBackupAtUtc { get; set; }
 }
 
 public static class SecretsStore
@@ -118,6 +127,10 @@ public static class SecretsStore
             data.TwitchClientSecret = previous.TwitchClientSecret;
             data.LastDeployedNginxHash = previous.LastDeployedNginxHash;
             data.LastDeployedAtUtc = previous.LastDeployedAtUtc;
+            data.BackupFolder = previous.BackupFolder;
+            data.BackupIntervalHours = previous.BackupIntervalHours;
+            data.BackupPassphrase = previous.BackupPassphrase;
+            data.LastBackupAtUtc = previous.LastBackupAtUtc;
         }
         Save(path, data);
     }

@@ -167,6 +167,488 @@ public class MainViewModel : ObservableBase
 
     public string PollStatusText { get; private set; } = "poll widget off";
 
+    // ---------- stream info (title/category sync, Twitch first) ----------
+
+    private string _streamTitle = "";
+    private string _streamCategoryText = "";
+    private string? _pickedCategoryId;
+    private string _pickedCategoryName = "";
+    private StreamInfoService.CategoryResult? _selectedCategoryResult;
+    private List<StreamInfoService.CategoryResult> _categoryResults = new();
+    private bool _streamInfoPrefilled;
+    private readonly DispatcherTimer _categorySearchTimer;
+
+    // Prefilled from the channel's CURRENT title/category on the first login of
+    // a session - the platform is the source of truth; the boxes just show it.
+    private bool _streamInfoTouched;
+
+    public string StreamTitle
+    {
+        get => _streamTitle;
+        set { _streamInfoTouched = true; Set(ref _streamTitle, value); }
+    }
+
+    public string StreamCategoryText
+    {
+        get => _streamCategoryText;
+        set
+        {
+            _streamInfoTouched = true;
+            if (!Set(ref _streamCategoryText, value)) return;
+            _pickedCategoryId = null;
+            _pickedCategoryName = "";
+            Raise(nameof(StreamCategoryPickedText));
+            ScheduleCategorySearch();
+        }
+    }
+
+    public StreamInfoService.CategoryResult? SelectedCategoryResult
+    {
+        get => _selectedCategoryResult;
+        set
+        {
+            if (!Set(ref _selectedCategoryResult, value) || value is null) return;
+            _pickedCategoryId = value.Id;
+            _pickedCategoryName = value.Name;
+            _streamCategoryText = value.Name;
+            Raise(nameof(StreamCategoryText));
+            CategoryResults = new();
+            Raise(nameof(StreamCategoryPickedText));
+        }
+    }
+
+    public List<StreamInfoService.CategoryResult> CategoryResults
+    {
+        get => _categoryResults;
+        private set { _categoryResults = value ?? new(); Raise(nameof(CategoryResults)); Raise(nameof(HasCategoryResults)); }
+    }
+
+    public bool HasCategoryResults => _categoryResults.Count > 0;
+
+    public string StreamCategoryPickedText => _pickedCategoryId != null
+        ? $"category: {_pickedCategoryName}"
+        : "no category picked (title-only apply)";
+
+    public string StreamInfoStatusText { get; private set; } = "";
+
+    // Host resources, refreshed with every 10s watchdog pass (same SSH session,
+    // same command - the pass already exists, this only reads its new RES tail).
+    public string ResourceSummaryText { get; private set; } = "";
+
+    private static string PctOrNa(double v) => v >= 0 ? $"{v:0}%" : "n/a";
+    private static string MbpsOrNa(double v) => v >= 0 ? $"{v:0.0} Mbps" : "n/a";
+
+    private void SetResourceSummary(ServerResources? r)
+    {
+        ResourceSummaryText = r is null
+            ? ""
+            : $"CPU {PctOrNa(r.CpuPercent)}   RAM {r.RamUsedGb:0.0}/{r.RamTotalGb:0.0} GB   disk {PctOrNa(r.DiskUsedPercent)}   net \u2193{MbpsOrNa(r.NetRxMbps)} \u2191{MbpsOrNa(r.NetTxMbps)}";
+        Raise(nameof(ResourceSummaryText));
+        Raise(nameof(HasResourceSummary));
+    }
+
+    public bool HasResourceSummary => ResourceSummaryText.Length > 0;
+
+    private void ScheduleCategorySearch()
+    {
+        _categorySearchTimer.Stop();
+        _categorySearchTimer.Start();
+    }
+
+    private async Task SearchCategoriesAsync()
+    {
+        var auth = _twitchAuth;
+        if (auth == null || string.IsNullOrWhiteSpace(_streamCategoryText))
+        {
+            CategoryResults = new();
+            return;
+        }
+        string query = _streamCategoryText;
+        List<StreamInfoService.CategoryResult> results;
+        try
+        {
+            results = await StreamInfoService.SearchCategoriesAsync(auth, query);
+        }
+        catch
+        {
+            results = new();
+        }
+        // A stale response must not overwrite what the user is typing now.
+        if (query != _streamCategoryText) return;
+        CategoryResults = results;
+    }
+
+    private async Task ApplyStreamInfoAsync()
+    {
+        var auth = _twitchAuth;
+        if (auth == null)
+        {
+            StreamInfoStatusText = "log in on the Chat Overlays tab first";
+            Raise(nameof(StreamInfoStatusText));
+            return;
+        }
+        string? title = string.IsNullOrWhiteSpace(_streamTitle) ? null : _streamTitle.Trim();
+        if (title == null && _pickedCategoryId == null)
+        {
+            StreamInfoStatusText = "nothing to change - type a title or pick a category first";
+            Raise(nameof(StreamInfoStatusText));
+            return;
+        }
+        StreamInfoStatusText = "applying to Twitch...";
+        Raise(nameof(StreamInfoStatusText));
+        string? error = await StreamInfoService.ApplyAsync(auth, title, _pickedCategoryId);
+        StreamInfoStatusText = error ?? $"applied:{(title != null ? " title" : "")}{(_pickedCategoryId != null ? $" category {_pickedCategoryName}" : "")}";
+        Raise(nameof(StreamInfoStatusText));
+    }
+
+    // ---------- key rotation reminders ----------
+    //
+    // Keys leak via screenshots. Each destination records when its key was last
+    // rotated; enabled destinations past the interval (or never marked) feed
+    // one warning line on the Relay tab. Time-only changes ride the 30s
+    // live-check tick.
+
+    public string KeyRotationWarning
+    {
+        get
+        {
+            if (Config.KeyRotationReminderDays <= 0) return "";
+            var stale = Destinations
+                .Where(d => d.Enabled)
+                .Select(d => (d, age: KeyAgeDays(d)))
+                .Where(x => x.age is null || x.age > Config.KeyRotationReminderDays)
+                .ToList();
+            if (stale.Count == 0) return "";
+            string list = string.Join(", ", stale.Select(x =>
+                $"'{x.d.Name}' ({(x.age is null ? "never" : $"{x.age}d")})"));
+            return $"STREAM KEYS AGING: {list} - keys leak via screenshots. Rotate at each platform's dashboard, paste the new key here, then click 'Key rotated today' on the destination (Output Studio).";
+        }
+    }
+
+    public bool HasKeyRotationWarning => KeyRotationWarning.Length > 0;
+
+    private static int? KeyAgeDays(DestinationConfig d) =>
+        d.KeyRotatedAtUtc is null ? null : (int?)Math.Floor((DateTime.UtcNow - d.KeyRotatedAtUtc.Value.UtcDateTime).TotalDays);
+
+    private void RaiseKeyRotation()
+    {
+        Raise(nameof(KeyRotationWarning));
+        Raise(nameof(HasKeyRotationWarning));
+        foreach (var d in Destinations) d.RefreshKeyAge();
+    }
+
+    // ---------- relay metrics history + bandwidth watchdog ----------
+    //
+    // One /stat read per minute through the persistent SSH session, kept as an
+    // in-memory ring (24h). No on-server store, no redeploy: the toolkit is the
+    // only consumer, and history restarting with the toolkit is an honest
+    // trade for zero server-side moving parts.
+    private readonly List<KatStreamToolkit.Services.MetricSample> _metrics = new();
+    private readonly DispatcherTimer _metricsTimer;
+    private readonly DispatcherTimer _backupTimer;
+    private int _metricsBusy;
+    private KatStreamToolkit.Services.MetricSample[] _metricsSeries = Array.Empty<KatStreamToolkit.Services.MetricSample>();
+
+    private const int MetricsMaxSamples = 24 * 60;
+
+    public KatStreamToolkit.Services.MetricSample[] MetricsSeries => _metricsSeries;
+
+    public string MetricsSummaryText
+    {
+        get
+        {
+            if (_metrics.Count == 0) return "no samples yet - polls once a minute while the relay answers";
+            var last = _metrics[^1];
+            var span = last.UtcTime - _metrics[0].UtcTime;
+            return $"latest: in {last.InMbps:0.0} / out {last.OutMbps:0.0} Mbps   " +
+                   $"{last.Clients} clients, {last.Streams} streams   " +
+                   $"{_metrics.Count} samples over {(int)span.TotalHours}h{(int)span.Minutes:D2}m";
+        }
+    }
+
+    private async Task PollMetricsAsync()
+    {
+        if (Interlocked.CompareExchange(ref _metricsBusy, 1, 0) != 0) return;
+        try
+        {
+            var target = BuildTarget();
+            var sample = await Task.Run(() => RelayMetricsService.FetchSample(target));
+            if (sample != null)
+            {
+                _metrics.Add(sample);
+                if (_metrics.Count > MetricsMaxSamples)
+                    _metrics.RemoveRange(0, _metrics.Count - MetricsMaxSamples);
+                _metricsSeries = _metrics.ToArray();
+                Raise(nameof(MetricsSeries));
+                Raise(nameof(MetricsSummaryText));
+            }
+        }
+        catch
+        {
+            // No server configured / unreachable - the chart just stops growing.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _metricsBusy, 0);
+        }
+    }
+
+    // The bandwidth watchdog: CONFIGURED outputs (main + ladder rungs) project a
+    // monthly traffic number at 24/7; warn while there is time to drop bitrates.
+    public string BandwidthWarning
+    {
+        get
+        {
+            double allowanceGb = Config.BandwidthMonthlyGb;
+            if (allowanceGb <= 0) return "";
+            double projectedGb = ProjectedMonthlyGb();
+            if (projectedGb <= allowanceGb) return "";
+            return $"BANDWIDTH: the configured outputs project ~{projectedGb:0} GB/month at 24/7, over your {allowanceGb:0} GB allowance. " +
+                   "Drop destination bitrates or ladder rungs, or raise the allowance - the VPS bills overage (or throttles).";
+        }
+    }
+
+    public bool HasBandwidthWarning => BandwidthWarning.Length > 0;
+
+    private double ProjectedMonthlyGb()
+    {
+        double serverMbps = Destinations.Where(d => d.Enabled)
+            .Sum(d => d.VideoBitrateKbps + d.AudioBitrateKbps
+                      + d.EffectiveVariants().Sum(v => v.VideoBitrateKbps + d.AudioBitrateKbps)) / 1000.0 * 1.1;
+        return serverMbps * 0.45 * 24 * 30; // 0.45 GB per Mbps-hour
+    }
+
+    private void RaiseBandwidth()
+    {
+        Raise(nameof(BandwidthWarning));
+        Raise(nameof(HasBandwidthWarning));
+    }
+
+    // ---------- toolkit backups ----------
+    //
+    // config.json + the active keys file, zipped and AES-GCM encrypted with a
+    // passphrase (the only key - it lives in secrets.json, never inside the
+    // backup's reach). Scheduled by an interval checked every 15 minutes; the
+    // newest 15 files are kept.
+
+    public string BackupFolder
+    {
+        get => _secrets.BackupFolder;
+        set { if (_secrets.BackupFolder == value) return; _secrets.BackupFolder = value; ScheduleSave(); }
+    }
+
+    public int BackupIntervalHours
+    {
+        get => _secrets.BackupIntervalHours;
+        set
+        {
+            int clamped = Math.Clamp(value, 0, 24 * 30);
+            if (_secrets.BackupIntervalHours == clamped) return;
+            _secrets.BackupIntervalHours = clamped;
+            ScheduleSave();
+        }
+    }
+
+    public string BackupPassphrase
+    {
+        get => _secrets.BackupPassphrase;
+        set { if (_secrets.BackupPassphrase == value) return; _secrets.BackupPassphrase = value; ScheduleSave(); }
+    }
+
+    public string BackupStatusText { get; private set; } = "";
+
+    private void SetBackupStatus(string s)
+    {
+        BackupStatusText = s;
+        Raise(nameof(BackupStatusText));
+    }
+
+    private string EffectiveBackupFolder => string.IsNullOrWhiteSpace(_secrets.BackupFolder)
+        ? Path.Combine(ConfigStore.DirectoryPath, "backups")
+        : _secrets.BackupFolder.Trim();
+
+    private void BackupNow(bool silent)
+    {
+        var result = BackupService.Backup(EffectiveBackupFolder, EffectiveKeysPath, _secrets.BackupPassphrase);
+        if (result.Error != null)
+        {
+            SetBackupStatus(result.Error);
+            if (!silent)
+                MessageBox.Show(result.Error, "Toolkit backup", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        _secrets.LastBackupAtUtc = DateTime.UtcNow;
+        ScheduleSave();
+        SetBackupStatus($"backed up at {DateTime.Now:HH:mm} -> {result.Path}");
+    }
+
+    // Restore replaces BOTH files on disk and restarts the toolkit - the live
+    // config object stays untouched until the new process loads the files.
+    private void RestoreBackup()
+    {
+        if (string.IsNullOrWhiteSpace(_secrets.BackupPassphrase))
+        {
+            MessageBox.Show("Enter the backup passphrase first - it is not stored inside the backup.",
+                "Restore backup", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Open a toolkit backup",
+            Filter = "Toolkit backup (*" + BackupService.Extension + ")|*" + BackupService.Extension,
+            InitialDirectory = EffectiveBackupFolder,
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        BackupService.RestorePayload payload;
+        try
+        {
+            payload = BackupService.Open(dlg.FileName, _secrets.BackupPassphrase);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Restore backup", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            "Replace the current config AND keys file with this backup, then restart the toolkit?\n" +
+            "Everything changed since the backup is lost.",
+            "Restore backup", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        // Config first: the restored config's KeysFilePath decides where the
+        // keys file belongs (default location vs a moved keys file).
+        ConfigStore.AtomicWrite(ConfigStore.ConfigFilePath, payload.ConfigJson);
+        string secretsTarget = ReadKeysFilePath(payload.ConfigJson);
+        ConfigStore.AtomicWrite(
+            string.IsNullOrWhiteSpace(secretsTarget) ? EffectiveKeysPath : secretsTarget,
+            payload.SecretsJson);
+
+        string? exe = Environment.ProcessPath;
+        if (exe != null)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = true });
+            }
+            catch
+            {
+                MessageBox.Show("Backup restored. Start the toolkit again to load it.",
+                    "Restore backup", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        Application.Current.Shutdown();
+    }
+
+    private static string ReadKeysFilePath(string configJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(configJson);
+            return doc.RootElement.TryGetProperty("KeysFilePath", out var p) &&
+                   p.ValueKind == System.Text.Json.JsonValueKind.String
+                ? p.GetString() ?? ""
+                : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private void BackupTimerTick()
+    {
+        int hours = _secrets.BackupIntervalHours;
+        if (hours <= 0) return;
+        if (DateTime.UtcNow - _secrets.LastBackupAtUtc < TimeSpan.FromHours(hours)) return;
+        BackupNow(silent: true);
+    }
+
+    // ---------- server doctor ----------
+    //
+    // One SSH pass + one outside probe: Docker, relay container, disk, RAM,
+    // MTU/MSS hardening, ufw, relay-config freshness, and whether 1935 answers
+    // from THIS machine. Every failure prints its own fix command.
+
+    public System.Collections.ObjectModel.ObservableCollection<DoctorCheck> DoctorChecks { get; } = new();
+
+    public string DoctorSummaryText { get; private set; } = "Server doctor: not run yet";
+
+    public ICommand RunServerDoctorCommand { get; }
+
+    public ICommand ApplyUfwFixCommand { get; }
+
+    private bool _ufwFixable;
+    private bool UfwFixable
+    {
+        get => _ufwFixable;
+        set { _ufwFixable = value; Raise(nameof(UfwFixable)); }
+    }
+
+    private async Task RunServerDoctorAsync(Action<string> log)
+    {
+        var target = BuildTarget();
+        log("[doctor] running the checklist over SSH + one port probe...");
+        var checks = await ServerDoctor.RunAsync(target, Config);
+        UfwFixable = ServerDoctor.UfwState == ServerDoctor.UfwFirewall.Blocked;
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            DoctorChecks.Clear();
+            foreach (var c in checks) DoctorChecks.Add(c);
+            int ok = checks.Count(c => c.State == "ok");
+            int warn = checks.Count(c => c.State == "warn");
+            int fail = checks.Count(c => c.State == "fail");
+            DoctorSummaryText = $"Server doctor: {ok} ok, {warn} warnings, {fail} failures ({checks.Count} checks)";
+            Raise(nameof(DoctorSummaryText));
+        });
+        foreach (var c in checks)
+            log($"[doctor] {c.State.ToUpperInvariant(),-4} {c.Name}: {c.Detail}" + (c.Fix != null ? "  FIX: " + c.Fix : ""));
+        log("[doctor] done.");
+    }
+
+    // One-click host-firewall fix, offered only when the doctor saw ufw active
+    // without a 1935 rule. Re-runs the doctor afterwards so the lights tell the truth.
+    private async Task ApplyUfwFixAsync(Action<string> log)
+    {
+        var target = BuildTarget();
+        log("[doctor] applying ufw fix (OpenSSH first, then 1935/tcp)...");
+        string result = await ServerDoctor.ApplyUfwRules(target);
+        log("[doctor] ufw: " + result);
+        await RunServerDoctorAsync(log);
+    }
+
+    // One pull per session: fill the boxes with what the channel shows right
+    // now, never clobbering something the user already typed.
+    private async Task PrefillStreamInfoAsync(TwitchAuthData auth)
+    {        if (_streamInfoPrefilled || _streamInfoTouched) return;
+        try
+        {
+            var info = await StreamInfoService.FetchCurrentAsync(auth);
+            if (info == null) return;
+            _streamInfoPrefilled = true;
+            if (_streamTitle.Length == 0)
+            {
+                _streamTitle = info.Title;
+                Raise(nameof(StreamTitle));
+            }
+            if (_pickedCategoryId == null && _streamCategoryText.Length == 0)
+            {
+                _pickedCategoryId = string.IsNullOrEmpty(info.GameId) ? null : info.GameId;
+                _pickedCategoryName = info.GameName;
+                _streamCategoryText = info.GameName;
+                Raise(nameof(StreamCategoryText));
+                Raise(nameof(StreamCategoryPickedText));
+            }
+            StreamInfoStatusText = "loaded the current Twitch title/category";
+            Raise(nameof(StreamInfoStatusText));
+        }
+        catch
+        {
+            // Prefill is best-effort; Apply reports real problems.
+        }
+    }
+
     // Shown in the Alerts tab: the banner file used when the path field is empty.
     public string AlertBannerDefaultPath => Services.AlertService.DefaultBannerPath;
 
@@ -247,6 +729,10 @@ public class MainViewModel : ObservableBase
             auth.ExpiresUtc < DateTime.UtcNow + TimeSpan.FromMinutes(30) &&
             !string.IsNullOrWhiteSpace(auth.RefreshToken))
             _ = RefreshTwitchTokenAsync();
+        // Title/category sync: once per session, pull the channel's current
+        // title/category into the Go-live section (no-op when not logged in).
+        if (auth != null)
+            _ = PrefillStreamInfoAsync(auth);
     }
 
     private async Task RefreshTwitchTokenAsync()
@@ -562,6 +1048,7 @@ public class MainViewModel : ObservableBase
         RelayStatusText = !reachable
             ? "relay not responding - deploy the bundle first"
             : receiving ? "receiving your stream" : "relay running, waiting for OBS";
+        SetResourceSummary(snap.Resources);
         Raise(nameof(ObsLight));
         Raise(nameof(ObsLightText));
         Raise(nameof(RelayLight));
@@ -605,6 +1092,7 @@ public class MainViewModel : ObservableBase
                 d.PushLight = VerifyLight.Unknown;
                 ClearAlarm("enc:" + d.Id);
                 ClearAlarm("push:" + d.Id);
+                ClearAlarm("encvar:" + d.Id);
                 continue;
             }
 
@@ -618,11 +1106,19 @@ public class MainViewModel : ObservableBase
                 d.PushLight = d.Enabled ? VerifyLight.Idle : VerifyLight.Unknown;
                 ClearAlarm("enc:" + d.Id);
                 ClearAlarm("push:" + d.Id);
+                ClearAlarm("encvar:" + d.Id);
                 _encoderDownTicks.Remove(d.Id);
                 _encoderNoFrameTicks.Remove(d.Id);
                 _pushErrorTicks.Remove(d.Id);
+                _variantDownTicks.Remove(d.Id);
+                _variantNoFrameTicks.Remove(d.Id);
                 continue;
             }
+
+            // Ladder variants are watched for every enabled destination (a
+            // passthrough destination can run variant encoders too), with their
+            // own alarm - separate from the main output's light.
+            HandleVariantHealth(d, snap);
 
             if (routed)
             {
@@ -732,6 +1228,97 @@ public class MainViewModel : ObservableBase
     private readonly Dictionary<Guid, bool> _encoderWasHealthy = new();
     private readonly Dictionary<Guid, int> _encoderNoFrameTicks = new();
     private readonly Dictionary<Guid, int> _pushErrorTicks = new();
+    // Quality-ladder variants: one aggregated alarm per destination, so the
+    // per-rung state collapses into two tick counters + a "was healthy" set
+    // keyed "<destId>:<suffix>".
+    private readonly Dictionary<Guid, int> _variantDownTicks = new();
+    private readonly Dictionary<Guid, int> _variantNoFrameTicks = new();
+    private readonly HashSet<string> _variantHealthy = new(StringComparer.Ordinal);
+
+    private void HandleVariantHealth(DestinationConfig d, RelayHealthSnapshot snap)
+    {
+        var states = snap.Variants.TryGetValue(d.Id, out var vs) ? vs : null;
+        if (states is not { Count: > 0 })
+        {
+            // No variants configured (or none left): a stale alarm must not linger.
+            ClearAlarm("encvar:" + d.Id);
+            _variantDownTicks.Remove(d.Id);
+            _variantNoFrameTicks.Remove(d.Id);
+            return;
+        }
+
+        var down = new List<string>();
+        var frozen = new List<string>();
+        bool anyAlive = false;
+        bool anyMissingAge = false;
+        foreach (var v in states)
+        {
+            string key = d.Id + ":" + v.Suffix;
+            if (v.ProcessAlive && v.SnapshotAge is >= 0 and <= 30)
+                _variantHealthy.Add(key);
+
+            if (!v.ProcessAlive)
+            {
+                down.Add(v.Suffix);
+                _variantHealthy.Remove(key);
+            }
+            else
+            {
+                anyAlive = true;
+                if (v.SnapshotAge is int age)
+                {
+                    if (age > 60 && _variantHealthy.Contains(key))
+                        frozen.Add($"{v.Suffix} (frame ~{age}s old)");
+                }
+                else
+                {
+                    anyMissingAge = true;
+                }
+            }
+        }
+
+        // Down: debounced two ticks like the main encoder (an nginx respawn
+        // blip must stay silent).
+        if (down.Count > 0)
+        {
+            int ticks = _variantDownTicks.TryGetValue(d.Id, out int seen) ? seen + 1 : 1;
+            _variantDownTicks[d.Id] = ticks;
+            if (ticks >= 2)
+            {
+                RaiseAlarm(new WatchdogAlarm("encvar:" + d.Id,
+                    $"'{d.Name}' LADDER VARIANT DOWN ({string.Join(", ", down)}) - the main output keeps running; this extra quality step is not being generated."
+                    + " Just added it? Redeploy from the Deploy tab.", d.Id) { CanRestart = true });
+            }
+            _variantNoFrameTicks.Remove(d.Id);
+            return;
+        }
+        _variantDownTicks.Remove(d.Id);
+
+        // Frozen: alive but the snapshot stopped updating. Same was-healthy rule
+        // as the main encoder; a missing age needs two ticks.
+        bool frozenNoAge = false;
+        if (anyAlive && anyMissingAge && frozen.Count == 0)
+        {
+            int nft = _variantNoFrameTicks.TryGetValue(d.Id, out int n) ? n + 1 : 1;
+            _variantNoFrameTicks[d.Id] = nft;
+            frozenNoAge = _variantHealthy.Count > 0 && nft >= 2;
+        }
+        else
+        {
+            _variantNoFrameTicks.Remove(d.Id);
+        }
+
+        if (frozen.Count > 0 || frozenNoAge)
+        {
+            string what = frozen.Count > 0 ? string.Join(", ", frozen) : "its snapshot is gone or unreadable";
+            RaiseAlarm(new WatchdogAlarm("encvar:" + d.Id,
+                $"'{d.Name}' LADDER VARIANT FROZEN ({what}) - alive but no new frames. The main output is unaffected."
+                + " Restart respawns ALL of this destination's encoders.", d.Id) { CanRestart = true });
+            return;
+        }
+
+        ClearAlarm("encvar:" + d.Id);
+    }
     private readonly Dictionary<Guid, DateTime> _lastAutoRestart = new();
 
     public ObservableCollection<WatchdogAlarm> Alarms { get; } = new();
@@ -964,6 +1551,7 @@ public class MainViewModel : ObservableBase
     // server is sending but the platform is not showing it.
     private void LiveCheckTick()
     {
+        RaiseKeyRotation();
         if (Interlocked.CompareExchange(ref _liveCheckBusy, 1, 0) != 0) return;
         var jobs = new List<(DestinationConfig Dest, Platform Platform, string Handle)>();
         foreach (var d in Destinations)
@@ -989,7 +1577,7 @@ public class MainViewModel : ObservableBase
         var ui = TaskScheduler.FromCurrentSynchronizationContext();
         Task.Run(async () =>
         {
-            var results = new List<(DestinationConfig Dest, LiveState State)>();
+            var results = new List<(DestinationConfig Dest, LiveCheckResult Result)>();
             // Sequential on purpose: four platforms polled in parallel every 30s
             // invites rate limiting; the 25s cap keeps a slow platform from
             // stalling the next tick.
@@ -998,24 +1586,27 @@ public class MainViewModel : ObservableBase
             {
                 try
                 {
-                    results.Add((dest, await LiveCheckService.CheckAsync(platform, handle, cts.Token)));
+                    results.Add((dest, await LiveCheckService.CheckDetailedAsync(platform, handle, cts.Token)));
                 }
                 catch
                 {
-                    results.Add((dest, LiveState.Unknown));
+                    results.Add((dest, LiveCheckResult.Unknown));
                 }
             }
             return results;
         }).ContinueWith(t =>
         {
             if (t.Status == TaskStatus.RanToCompletion && t.Result != null)
-                foreach (var (dest, state) in t.Result)
-                    dest.LiveLight = state switch
+                foreach (var (dest, result) in t.Result)
+                {
+                    dest.LiveLight = result.State switch
                     {
                         LiveState.Live => VerifyLight.Ok,
                         LiveState.Offline => VerifyLight.Idle,
                         _ => VerifyLight.Unknown,
                     };
+                    dest.Viewers = result.State == LiveState.Live ? result.Viewers : null;
+                }
             Interlocked.Exchange(ref _liveCheckBusy, 0);
         }, ui);
     }
@@ -1052,7 +1643,14 @@ public class MainViewModel : ObservableBase
     public ICommand RestartRelayCommand { get; }
     public ICommand RestartEncoderCommand { get; }
     public ICommand GoLiveCommand { get; }
+
     public ICommand EndStreamCommand { get; }
+
+    public ICommand ApplyStreamInfoCommand { get; }
+
+    public ICommand BackupNowCommand { get; }
+
+    public ICommand RestoreBackupCommand { get; }
 
     private readonly DispatcherTimer _autoSave;
     private readonly DispatcherTimer _saveDebounce;
@@ -1121,6 +1719,16 @@ public class MainViewModel : ObservableBase
                 SyncTwitchAuth();
                 ScheduleSave();
             }
+            else if (e.PropertyName is nameof(AppConfig.KeyRotationReminderDays))
+            {
+                RaiseKeyRotation();
+                ScheduleSave();
+            }
+            else if (e.PropertyName is nameof(AppConfig.BandwidthMonthlyGb))
+            {
+                RaiseBandwidth();
+                ScheduleSave();
+            }
         };
         // The shared chat filter: overlays consult the static ChatFilter at
         // render time - keep it in sync with the config (and seed it now, so a
@@ -1180,6 +1788,11 @@ public class MainViewModel : ObservableBase
         }, _ => !IsRunning);
         GoLiveCommand = new RelayCommand(_ => RunBackground(GoLiveFlowAsync), _ => !IsRunning);
         EndStreamCommand = new RelayCommand(_ => RunBackground(EndStreamFlowAsync), _ => !IsRunning);
+        ApplyStreamInfoCommand = new RelayCommand(_ => _ = ApplyStreamInfoAsync(), _ => _twitchAuth != null);
+        BackupNowCommand = new RelayCommand(_ => BackupNow(silent: false));
+        RestoreBackupCommand = new RelayCommand(_ => RestoreBackup());
+        RunServerDoctorCommand = new RelayCommand(_ => RunBackground(RunServerDoctorAsync), _ => !IsRunning);
+        ApplyUfwFixCommand = new RelayCommand(_ => RunBackground(ApplyUfwFixAsync), _ => !IsRunning && UfwFixable);
         LoginTwitchCommand = new RelayCommand(_ => LoginTwitch(), _ => _twitchBusy == 0);
         LogoutTwitchCommand = new RelayCommand(_ => LogoutTwitch(), _ => _twitchAuth != null);
         AddCommandCommand = new RelayCommand(_ => AddCommand());
@@ -1265,6 +1878,28 @@ public class MainViewModel : ObservableBase
         _autoSave.Tick += (_, _) => Save();
         _autoSave.Start();
 
+        // Category search-as-you-type (stream info): debounced so a six-letter
+        // category is one Helix search, not six.
+        _categorySearchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _categorySearchTimer.Tick += async (_, _) =>
+        {
+            _categorySearchTimer.Stop();
+            await SearchCategoriesAsync();
+        };
+
+        // Relay metrics: one /stat poll per minute through the persistent SSH
+        // session (24h ring buffer, Status board chart).
+        _metricsTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        _metricsTimer.Tick += (_, _) => _ = PollMetricsAsync();
+        _metricsTimer.Start();
+
+        // Backup scheduler: checked every 15 minutes against the interval (and
+        // once right now - a never-backed-up install is due immediately).
+        _backupTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(15) };
+        _backupTimer.Tick += (_, _) => BackupTimerTick();
+        _backupTimer.Start();
+        BackupTimerTick();
+
         _autoStatusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         _autoStatusTimer.Tick += (_, _) => { if (AutoStatus && !IsRunning) RefreshStatus(); };
         _autoStatusTimer.Start();
@@ -1286,12 +1921,14 @@ public class MainViewModel : ObservableBase
     {
         d.PropertyChanged += DestinationPropertyChanged;
         HookLayers(d);
+        HookVariants(d);
     }
 
     private void DetachDestination(DestinationConfig d)
     {
         d.PropertyChanged -= DestinationPropertyChanged;
         UnhookLayers(d);
+        UnhookVariants(d);
     }
 
     private void DestinationPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -1310,6 +1947,11 @@ public class MainViewModel : ObservableBase
         {
             UnhookLayers(d);
             HookLayers(d);
+        }
+        if (e.PropertyName is nameof(DestinationConfig.Variants) && sender is DestinationConfig vd)
+        {
+            UnhookVariants(vd);
+            HookVariants(vd);
         }
         if (e.PropertyName is nameof(DestinationConfig.ChannelHandle)
             or nameof(DestinationConfig.Enabled)
@@ -1346,6 +1988,34 @@ public class MainViewModel : ObservableBase
     }
 
     private void LayerPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
+
+    // Same lifetime pattern as the layer hooks, for the quality-ladder variant
+    // list: editing a variant changes the generated nginx.conf, so every edit
+    // must refresh previews + deploy staleness and queue a save.
+    private readonly Dictionary<DestinationConfig, (System.Collections.ObjectModel.ObservableCollection<QualityVariantConfig> Variants, NotifyCollectionChangedEventHandler Handler)> _hookedVariants = new();
+
+    private void HookVariants(DestinationConfig d)
+    {
+        if (_hookedVariants.ContainsKey(d)) return;
+        NotifyCollectionChangedEventHandler handler = (_, e) =>
+        {
+            if (e.OldItems != null) foreach (QualityVariantConfig v in e.OldItems) v.PropertyChanged -= VariantPropertyChanged;
+            if (e.NewItems != null) foreach (QualityVariantConfig v in e.NewItems) v.PropertyChanged += VariantPropertyChanged;
+            Refresh();
+        };
+        _hookedVariants[d] = (d.Variants, handler);
+        d.Variants.CollectionChanged += handler;
+        foreach (var v in d.Variants) v.PropertyChanged += VariantPropertyChanged;
+    }
+
+    private void UnhookVariants(DestinationConfig d)
+    {
+        if (!_hookedVariants.Remove(d, out var hooked)) return;
+        hooked.Variants.CollectionChanged -= hooked.Handler;
+        foreach (var v in hooked.Variants) v.PropertyChanged -= VariantPropertyChanged;
+    }
+
+    private void VariantPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
 
     private void AddDestination()
     {
@@ -1667,9 +2337,12 @@ public class MainViewModel : ObservableBase
     private void Refresh()
     {
         Config.Destinations = Destinations.ToList();
+        RaiseKeyRotation();
+        RaiseBandwidth();
 
         double serverMbps = Destinations.Where(d => d.Enabled)
-            .Sum(d => (d.VideoBitrateKbps + d.AudioBitrateKbps) / 1000.0) * 1.1;
+            .Sum(d => (d.VideoBitrateKbps + d.AudioBitrateKbps
+                       + d.EffectiveVariants().Sum(v => v.VideoBitrateKbps + d.AudioBitrateKbps)) / 1000.0) * 1.1;
         double homeMbps = Config.Upstream.VideoBitrateKbps / 1000.0 * 1.1;
         double tbMonth = serverMbps * 0.45 * 720 / 1000;
 

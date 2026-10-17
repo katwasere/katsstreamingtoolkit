@@ -14,11 +14,16 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:BoolToVisibilityConverter x:Key="InvBoolToVis" Inverted="True" />
         <local:LightBrushConverter x:Key="LightBrush" />
+        <local:NullToVisibilityConverter x:Key="NotNullToVis" Inverted="True" />
     </Window.Resources>
 
     <DockPanel>
         <Border DockPanel.Dock="Bottom" Background="#FF1B1E24" Padding="12,6">
-            <TextBlock Text="{Binding BandwidthSummary, Mode=OneWay}" Foreground="#FF9AA0A8" FontSize="12" />
+            <StackPanel>
+                <TextBlock Text="{Binding BandwidthSummary, Mode=OneWay}" Foreground="#FF9AA0A8" FontSize="12" />
+                <TextBlock Text="{Binding BandwidthWarning, Mode=OneWay}" Foreground="#FFFFD27A" FontSize="12" TextWrapping="Wrap"
+                           Visibility="{Binding HasBandwidthWarning, Converter={StaticResource BoolToVis}}" />
+            </StackPanel>
         </Border>
 
         <TabControl Margin="8">
@@ -48,6 +53,34 @@
                                 </StackPanel>
                                 <TextBlock Text="Start stream: verifies the relay, tells OBS to start (if control is on), then confirms your stream actually arrives. Same PC first: enable the obs-websocket plugin in OBS (Tools -> WebSocket Server Settings), set the same password here."
                                            FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+                                <Separator Margin="0,10,0,8" Background="#FF3C3C3C" />
+
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Stream info (Twitch)" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding StreamInfoStatusText, Mode=OneWay}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                               FontSize="11" Foreground="#FF9AA0A8" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,2">
+                                    <TextBlock Text="Title:" Width="70" VerticalAlignment="Center" />
+                                    <TextBox Width="420" Text="{Binding StreamTitle, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,2">
+                                    <TextBlock Text="Category:" Width="70" VerticalAlignment="Center" />
+                                    <StackPanel>
+                                        <TextBox Width="280" Text="{Binding StreamCategoryText, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"
+                                                 ToolTip="Type to search; pick a suggestion to select the category. Leave empty to apply the title only." />
+                                        <ListBox ItemsSource="{Binding CategoryResults}" SelectedItem="{Binding SelectedCategoryResult}"
+                                                 DisplayMemberPath="Name" MaxHeight="150" FontSize="11" Margin="0,2,0,0"
+                                                 Visibility="{Binding HasCategoryResults, Converter={StaticResource BoolToVis}}"
+                                                 ToolTip="Pick the category to set on Twitch" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding StreamCategoryPickedText, Mode=OneWay}" Margin="10,0,0,0" VerticalAlignment="Center"
+                                               FontSize="11" Foreground="#FF9AA0A8" />
+                                    <Button Content="Apply to Twitch" Command="{Binding ApplyStreamInfoCommand}" Margin="12,0,0,0" Padding="10,3" />
+                                </StackPanel>
+                                <TextBlock Text="Sets title and/or category on YOUR Twitch channel (needs the Twitch login; only the channel owner can). Prefilled from what the channel shows right now. Kick/YouTube sync waits for their logins."
+                                           FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,4,0,0" />
                             </StackPanel>
                         </Border>
 
@@ -134,11 +167,25 @@
                                                         <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{Binding LiveLight, Converter={StaticResource LightBrush}}" />
                                                         <TextBlock Text="{Binding LiveLightText, Mode=OneWay}" FontSize="10" Foreground="#FFDDE3EA" Margin="5,0,0,0" VerticalAlignment="Center" />
                                                     </StackPanel>
+                                                    <TextBlock Text="{Binding KeyAgeText, Mode=OneWay}" FontSize="10" Foreground="#FF9AA0A8" Margin="0,3,0,0" />
                                                 </StackPanel>
                                             </Border>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
+                                <TextBlock Text="{Binding KeyRotationWarning, Mode=OneWay}" FontSize="11" Foreground="#FFFFD27A"
+                                           TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Visibility="{Binding HasKeyRotationWarning, Converter={StaticResource BoolToVis}}" />
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <TextBlock Text="Key rotation reminder (days):" FontSize="11" VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                    <TextBox Width="50" Text="{Binding Config.KeyRotationReminderDays}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="0 = off. Mark a rotation with 'Key rotated today' in the Output Studio after pasting a fresh key." FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <TextBlock Text="Monthly traffic allowance (GB):" FontSize="11" VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                    <TextBox Width="60" Text="{Binding Config.BandwidthMonthlyGb}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="0 = off. Warn when the configured outputs project past it at 24/7." FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FF9AA0A8" />
+                                </StackPanel>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -215,6 +262,7 @@
                                 <DataGridTextColumn Header="Ingest URL (from platform dashboard)" Binding="{Binding IngestUrl}" Width="*" />
                                 <DataGridTextColumn Header="Handle (live checks)" Binding="{Binding ChannelHandle}" Width="110" />
                                 <DataGridTextColumn Header="Live" Binding="{Binding LiveLightText, Mode=OneWay}" Width="110" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Viewers" Binding="{Binding ViewersText, Mode=OneWay}" Width="70" IsReadOnly="True" />
                                 <DataGridTemplateColumn Header="Stream key" Width="150">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
@@ -231,12 +279,91 @@
                         <Button Content="Export server bundle..." Command="{Binding ExportServerCommand}" Padding="12,5" HorizontalAlignment="Left" />
                         <TextBlock Text="Writes a ready-to-deploy folder (Dockerfile + nginx config + step-by-step guide). See the Server tab for a preview."
                                    FontSize="11" Foreground="#FF9AA0A8" Margin="0,4,0,0" />
+
+                        <TextBlock Text="Toolkit backups" FontSize="15" FontWeight="Bold" Margin="0,12,0,6" />
+                        <Border Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,2">
+                                    <TextBlock Text="Backup folder:" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="300" Text="{Binding BackupFolder, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center"
+                                             ToolTip="Empty = a 'backups' folder next to your config. Point it at a synced folder (Nextcloud/Syncthing) for off-machine copies." />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                                    <TextBlock Text="Backup every (hours):" Width="180" VerticalAlignment="Center" />
+                                    <TextBox Width="60" Text="{Binding BackupIntervalHours}" VerticalAlignment="Center" />
+                                    <TextBlock Text="0 = off. Checked every 15 minutes, keeps the newest 15." FontSize="11" Foreground="#FF9AA0A8" Margin="10,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,2">
+                                    <TextBlock Text="Passphrase:" Width="180" VerticalAlignment="Center" />
+                                    <local:SecretBox Width="220" SecretText="{Binding BackupPassphrase}" VerticalAlignment="Center" />
+                                    <TextBlock Text="  required - backups are AES-GCM encrypted with it" FontSize="11" Foreground="#FF9AA0A8" Margin="8,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Button Content="Back up now" Command="{Binding BackupNowCommand}" Padding="10,3" />
+                                    <Button Content="Restore from backup..." Command="{Binding RestoreBackupCommand}" Margin="8,0,0,0" Padding="10,3" />
+                                    <TextBlock Text="{Binding BackupStatusText, Mode=OneWay}" Margin="12,0,0,0" VerticalAlignment="Center" FontSize="11" Foreground="#FF9AA0A8" />
+                                </StackPanel>
+                                <TextBlock FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Text="Backs up your whole toolkit state: config + keys, encrypted with the passphrase (never stored in the backup). Restore replaces BOTH files and restarts the toolkit - everything changed since the backup is lost, so keep the passphrase safe: a backup without its passphrase is unreadable." />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
             <TabItem Header="Output Studio">
                 <local:OutputStudio />
+            </TabItem>
+
+            <TabItem Header="Status board">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+
+                        <TextBlock Text="Status board" FontSize="18" FontWeight="Bold" Margin="0,4,0,8" />
+                        <Border Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Relay:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <Ellipse Width="9" Height="9" Margin="6,0,0,0" VerticalAlignment="Center"
+                                         Fill="{Binding RelayLight, Converter={StaticResource LightBrush}}" />
+                                <TextBlock Text="{Binding RelayLightText, Mode=OneWay}" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                <TextBlock Text="   OBS feed:" FontWeight="SemiBold" Margin="16,0,0,0" VerticalAlignment="Center" />
+                                <Ellipse Width="9" Height="9" Margin="6,0,0,0" VerticalAlignment="Center"
+                                         Fill="{Binding ObsLight, Converter={StaticResource LightBrush}}" />
+                                <TextBlock Text="{Binding ObsLightText, Mode=OneWay}" Margin="5,0,0,0" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding RelayStatusText, Mode=OneWay}" Margin="16,0,0,0" VerticalAlignment="Center"
+                                           FontSize="11" Foreground="#FF9AA0A8" />
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="{Binding ResourceSummaryText, Mode=OneWay}" FontSize="12" Foreground="#FF8FD694"
+                                   Margin="0,0,0,12" Visibility="{Binding HasResourceSummary, Converter={StaticResource BoolToVis}}" />
+
+                        <TextBlock Text="Relay traffic (last 24h, one sample per minute)" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4" />
+                        <Border Background="#FF1B1E24" CornerRadius="8" Padding="8" Margin="0,0,0,4">
+                            <local:MetricsChart Height="170" Samples="{Binding MetricsSeries}" />
+                        </Border>
+                        <TextBlock Text="{Binding MetricsSummaryText, Mode=OneWay}" FontSize="11" Foreground="#FF9AA0A8" Margin="0,0,0,12" />
+
+                        <DataGrid ItemsSource="{Binding Destinations}"
+                                  AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                                  IsReadOnly="True" HeadersVisibility="Column" MinHeight="160">
+                            <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled, Mode=OneWay}" Width="40" />
+                                <DataGridTextColumn Header="Destination" Binding="{Binding Name, Mode=OneWay}" Width="170" />
+                                <DataGridTextColumn Header="Platform" Binding="{Binding Platform, Mode=OneWay}" Width="80" />
+                                <DataGridTextColumn Header="Orientation" Binding="{Binding Orientation, Mode=OneWay}" Width="90" />
+                                <DataGridTextColumn Header="Relay side (push)" Binding="{Binding PushLightText, Mode=OneWay}" Width="130" />
+                                <DataGridTextColumn Header="Platform side (live)" Binding="{Binding LiveLightText, Mode=OneWay}" Width="140" />
+                                <DataGridTextColumn Header="Viewers" Binding="{Binding ViewersText, Mode=OneWay}" Width="90" />
+                                <DataGridTextColumn Header="Variants" Binding="{Binding Variants.Count, Mode=OneWay}" Width="70" />
+                                <DataGridTextColumn Header="Stream key" Binding="{Binding KeyAgeText, Mode=OneWay}" Width="180" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <TextBlock FontSize="11" Foreground="#FF9AA0A8" TextWrapping="Wrap" Margin="0,6,0,0"
+                                   Text="Relay side = is the server actually sending this destination (push light, or its encoder for portrait/custom outputs). Platform side = does the platform SHOW the stream, polled every 30s from each platform's public API - the same checks the destination cards use. Viewers appear where a platform hands them out without a login (Twitch/Kick/TikTok; YouTube needs a paid API key). A green relay light next to a dark platform light means the server is sending but the platform is not showing it - that is when the watchdog banner explains why." />
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="Chat Overlays">
@@ -618,6 +745,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="#FF23272E" CornerRadius="8" Padding="12" Margin="0,0,0,10">
@@ -670,6 +798,11 @@
                             <Button Content="Test connection" Command="{Binding TestConnectionCommand}" Padding="10,3" />
                             <Button Content="Deploy to server" Command="{Binding DeployCommand}" Margin="6,0,0,0" Padding="10,3" />
                             <Button Content="Refresh status" Command="{Binding RefreshStatusCommand}" Margin="6,0,0,0" Padding="10,3" />
+                            <Button Content="Server doctor" Command="{Binding RunServerDoctorCommand}" Margin="6,0,0,0" Padding="10,3"
+                                    ToolTip="Checks Docker, the relay container, disk, RAM, MTU/MSS hardening, the firewall, relay-config freshness, and whether port 1935 answers from outside" />
+                            <Button Content="Apply ufw fix" Command="{Binding ApplyUfwFixCommand}" Margin="6,0,0,0" Padding="10,3"
+                                    Visibility="{Binding UfwFixable, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="ufw is active without a 1935 rule - allow OpenSSH + 1935/tcp over SSH (needs passwordless sudo)" />
                             <CheckBox Content="auto (10s)" IsChecked="{Binding AutoStatus}" Margin="12,0,0,0" VerticalAlignment="Center" />
                             <TextBlock Text="{Binding IsRunning, StringFormat=busy: {0}}" Margin="12,0,0,0" VerticalAlignment="Center"
                                        Foreground="#FF9AA0A8" Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
@@ -680,6 +813,36 @@
                              FontFamily="Consolas" FontSize="12" Background="#FF1B1E24" Foreground="#FFD8DEE9"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                              TextChanged="PreviewBox_TextChanged" />
+
+                    <Expander Grid.Row="3" Header="{Binding DoctorSummaryText, Mode=OneWay}" Margin="0,8,0,0">
+                        <ItemsControl ItemsSource="{Binding DoctorChecks}" Margin="4,6,0,4">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,3">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,8,0">
+                                                <Ellipse.Style>
+                                                    <Style TargetType="Ellipse">
+                                                        <Setter Property="Fill" Value="#FF5A6069" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding State}" Value="ok"><Setter Property="Fill" Value="#FF4CAF50" /></DataTrigger>
+                                                            <DataTrigger Binding="{Binding State}" Value="warn"><Setter Property="Fill" Value="#FFE2A93C" /></DataTrigger>
+                                                            <DataTrigger Binding="{Binding State}" Value="fail"><Setter Property="Fill" Value="#FFE2574A" /></DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Ellipse.Style>
+                                            </Ellipse>
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding Name}" Width="180" />
+                                            <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Margin="0,0,10,0" />
+                                        </StackPanel>
+                                        <TextBlock FontFamily="Consolas" FontSize="11" Foreground="#FFFFD27A" Margin="16,2,0,0"
+                                                   TextWrapping="Wrap" Text="{Binding Fix}"
+                                                   Visibility="{Binding Fix, Converter={StaticResource NotNullToVis}}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Expander>
                 </Grid>
             </TabItem>
 
@@ -712,7 +875,7 @@
 
                         <TextBlock Text="Live lights &amp; what's next" FontSize="16" FontWeight="Bold" Margin="0,0,0,6" />
                         <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
-                                   Text="Each destination card shows two lights: the relay-side push light (is the server actually sending?) and the platform-side live light (does the platform show the stream?). Live checks poll the platforms every 30 seconds using each destination's Handle column, falling back to your 'My channels' entries - a green push light next to a dark live light means the server is sending but the platform is not showing it. The watchdog watches the same picture every 10 seconds: if the relay dies, your OBS feed drops mid-stream, an output's encoder dies or freezes, or a push starts failing, a red WATCHDOG banner appears with the reason from the relay log; frozen encoders are killed automatically so nginx respawns them, and a Restart relay button is right there. Go live from the Relay tab: Start stream verifies the relay, starts OBS when 'Control OBS' is on (enable the obs-websocket plugin in OBS: Tools -> WebSocket Server Settings, same password as here), and confirms your stream actually arrives; End stream does the reverse. Moderation and !commands are live: log in on the Chat Overlays tab, right-click a chat line in an unlocked overlay to timeout/ban/delete, and build commands on the Commands tab. Alerts can auto-switch OBS scenes (Alerts sub-tab) and your active poll/prediction shows in a small widget (Polls sub-tab). Up next on the roadmap: title/category sync. See docs/ROADMAP.md." />
+                                   Text="Each destination card shows two lights: the relay-side push light (is the server actually sending?) and the platform-side live light (does the platform show the stream?). Live checks poll the platforms every 30 seconds using each destination's Handle column, falling back to your 'My channels' entries - a green push light next to a dark live light means the server is sending but the platform is not showing it. The watchdog watches the same picture every 10 seconds: if the relay dies, your OBS feed drops mid-stream, an output's encoder dies or freezes, or a push starts failing, a red WATCHDOG banner appears with the reason from the relay log; frozen encoders are killed automatically so nginx respawns them, and a Restart relay button is right there. Go live from the Relay tab: Start stream verifies the relay, starts OBS when 'Control OBS' is on (enable the obs-websocket plugin in OBS: Tools -> WebSocket Server Settings, same password as here), and confirms your stream actually arrives; End stream does the reverse. Moderation and !commands are live: log in on the Chat Overlays tab, right-click a chat line in an unlocked overlay to timeout/ban/delete, and build commands on the Commands tab. Alerts can auto-switch OBS scenes (Alerts sub-tab) and your active poll/prediction shows in a small widget (Polls sub-tab). Title/category sync is live on the Relay tab's Go-live section (Twitch first). See docs/ROADMAP.md." />
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

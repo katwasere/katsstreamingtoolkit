@@ -1,3 +1,129 @@
+# Session progress - 2026-10-11 (phase-two push #2, handoff note)
+
+## Where we are
+
+Phase-two queue cleared of everything that does NOT depend on the in-flight
+Kick/YouTube OAuth work OR on relay-bundle changes needing a tested deploy.
+Shipped this session (all building clean, details in docs/ROADMAP.md's Shipped
+section): **per-destination quality ladder**, **audio processing (normalize +
+trim)**, **title/category sync (Twitch first)**, **key rotation reminders**,
+**per-platform status board** (with viewer counts), **server resource view**,
+**relay metrics history + bandwidth watchdog**, **config backups** (encrypted,
+scheduled, one-click restore), **server doctor** (with provider detection,
+the firewall checklist and the ufw auto-fix). Generator + metrics + backup
+round-trip are assertion-tested by a scratch harness (29/29). The
+Kick/YouTube OAuth work stays in flight separately; BUG-49..75 fixes are
+already committed (c80e884).
+
+STAGED deliberately (see ROADMAP): HLS self-view and SRT ingest both change
+the SERVER BUNDLE (Dockerfile/nginx.conf) - they should land as their own
+tested deploy after this batch is verified, not stacked on top of eight
+unverified features. OBS portrait-scene handling needs Kat's scene-set
+decisions first.
+
+## Shipped this session (commit pending)
+
+- **Per-destination quality ladder** (`Models.QualityVariantConfig`,
+  `RelayConfigGenerator` variant paths, `DeployService` variant watchdog,
+  Output Studio ladder editor): extra downscaled rungs pushed beside the main
+  output under the stream key + suffix. Main output untouched (landscape mains
+  stay nginx's plain push - no double-encode). Watchdog watches every rung with
+  an aggregated per-destination alarm, separate from the main light.
+- **Audio processing per destination**: -16 LUFS loudnorm toggle + volume trim
+  (-30..+15 dB) per destination, inherited by variants. Music DUCKING was
+  deliberately not shipped (needs an unverified two-track OBS feed; parked on
+  the roadmap with the reasoning).
+- **Title/category sync (Twitch first)** (`Services/StreamInfoService.cs`,
+  Go-live section on the Relay tab): prefilled from the channel's current
+  state, debounced category search, Apply via Helix PATCH. Needs the Twitch
+  login (scope `channel:manage:broadcast` - logins older than that scope need
+  one re-login).
+- **Key rotation reminders** (`Config.KeyRotationReminderDays`,
+  `DestinationConfig.KeyRotatedAtUtc`): "Key rotated today" button in the
+  Output Studio, key age on every destination card, amber nag line on the
+  Relay tab with a configurable interval (0 = off).
+- **Status board tab**: one grid - on/off, platform, orientation, relay push
+  state, platform live state, VIEWERS (new: Twitch GraphQL/Kick/TikTok;
+  YouTube deliberately blank - no free API), variant count, key age. Live
+  checks now use `CheckDetailedAsync` (`LiveCheckResult`).
+- **Server resource view**: the 10s watchdog SSH pass gained a RES section
+  (CPU/RAM/disk/net from two /proc samples); green summary line on the Status
+  board, "n/a" per unreadable value.
+- **Relay metrics history + bandwidth watchdog**
+  (`Services/RelayMetricsService.cs`, `Views/MetricsChart.cs`): one /stat
+  poll per minute through the persistent SSH session -> 24h ring buffer ->
+  line chart on the Status board (in green / out blue). Bandwidth watchdog:
+  monthly GB allowance (Relay tab, 0 = off) vs the configured outputs'
+  24/7 projection -> amber warning in the bottom status bar.
+- **Config backups** (`Services/BackupService.cs`, Relay tab "Toolkit
+  backups" section): hourly-interval scheduler (checked every 15 min),
+  .katbak = PBKDF2(210k) + AES-GCM of a zip of config.json + the active keys
+  file, newest 15 kept, folder of choice. Restore verifies the passphrase,
+  writes config + keys (restored config decides where the keys file lands),
+  restarts the toolkit. Round-trip + wrong-passphrase tested by the harness.
+- **Server doctor** (`Services/ServerDoctor.cs`, Deploy tab): one SSH pass
+  checks Docker, kat-relay container, disk, RAM, MTU/MSS hardening, ufw,
+  relay-config freshness, and probes TCP 1935 FROM the toolkit machine;
+  checklist with dots + fix commands under the deploy log. Provider detection
+  (Oracle/AWS/Google/Hetzner metadata) calls out Oracle's console-side
+  security lists. "Apply ufw fix" button (only when ufw blocks 1935) allows
+  OpenSSH first, then 1935/tcp, and re-runs the checklist.
+
+## Not yet verified (needs Kat)
+
+- Ladder: add 2 variants to a destination -> nginx preview shows the rung
+  lines -> deploy -> the rung pushes appear in `docker exec kat-relay nginx -T`
+  (or the deploy log). Kill a rung's encoder on the server -> red
+  "LADDER VARIANT DOWN" banner names it and the MAIN push light stays green;
+  "restart encoder" on that alarm respawns the destination's encoders.
+- Audio: loudnorm + trim on one destination -> redeploy -> per-destination
+  command preview shows `-af adelay...,loudnorm=I=-16:TP=-1.5:LRA=11,volume=...`
+  -> the platform audio is audibly leveled.
+- Stream info: title/category boxes prefill from the live Twitch channel;
+  category search pops suggestions; Apply to Twitch changes the dashboard.
+  If Apply says the login lacks the scope -> one re-login.
+- Key rotation: "Key rotated today" -> card shows "key rotated X min ago";
+  set the interval to 0 -> the amber warning lists the destination; set it
+  back to 90 -> warning clears.
+- Status board: viewer counts appear on Twitch/Kick/TikTok while live
+  (YouTube row stays blank by design); resource line shows CPU/RAM/disk/net
+  once the relay answers.
+- Metrics chart: after a minute of relay uptime the Status board chart draws
+  in/out lines and the summary line grows samples; set a monthly allowance
+  below the projected usage -> the bottom-bar amber BANDWIDTH warning appears.
+- Backups: set a passphrase + interval -> "Back up now" writes a .katbak to
+  the folder; "Restore from backup..." with the passphrase shows the confirm
+  dialog, with a WRONG passphrase shows the plain error (and writes nothing);
+  restore replaces config+keys and restarts the toolkit. Keep a copy of the
+  pre-restore config.json when first testing restore.
+- Server doctor: "Server doctor" on the Deploy tab -> checklist appears under
+  the log with the summary in the expander header; the 1935 probe must say
+  OK (else the provider-firewall text names the fix). If ufw blocks 1935, an
+  "Apply ufw fix" button appears next to the doctor button (passwordless sudo
+  required) and the checklist re-runs green afterwards.
+- Deliberate behavior change to re-check: the server test encoder and the
+  server-side live preview of a PLAIN LANDSCAPE destination now show the full
+  frame instead of an accidental 9:16 center-crop (side effect of the ladder's
+  graph branch - the production push was always the untouched copy).
+
+## Known next steps (docs/ROADMAP.md)
+
+- STAGED, in order: **HLS self-view + SRT ingest** (both change the relay
+  bundle - implement + deploy as their own verified step), then **OBS
+  portrait-scene handling** (needs Kat's scene-set decisions).
+- Blocked on the OAuth work (in flight): Kick/YouTube logins, then their
+  moderation/alert/title-sync equivalents.
+- Deferred inside audio processing: music ducking (two-track OBS feed through
+  nginx-rtmp needs proving first).
+
+## Environment gotchas (carried over)
+
+- **Close the running toolkit before `dotnet build`** - exe lock (build stamp
+  in the title bar tells stale binaries apart).
+- Exclusive-fullscreen games swallow mouse input - borderless for overlay use.
+
+---
+
 # Session progress - 2026-10-11 (handoff note)
 
 ## Where we are

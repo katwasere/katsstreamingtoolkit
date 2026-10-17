@@ -108,6 +108,87 @@ Idea write-ups and Kats ratings (10 = add to roadmap) live in
   logins made before this), and a "Create a 30s test poll" button verifies
   the whole path without building a poll in the dashboard by hand. Settings
   live in the new Polls sub-tab; Kick/YouTube have no comparable public APIs.
+- **Per-destination quality ladder** - every destination can now push extra
+  downscaled variants of its output beside the main one (e.g. 1080p60 main +
+  720p + 480p rungs), each pushed to the SAME ingest under the stream key +
+  suffix (`key-720p`), with its own short-side size, bitrate and fps override.
+  The main output is untouched - a landscape destination's main stays nginx's
+  plain push of OBS's encode (no double-encode) while the rungs are server-side
+  ffmpeg encodes; portrait/custom destinations run one full compose graph per
+  rung. Edited in the Output Studio (suffix / short side / kbps / fps per row;
+  duplicate suffixes ignored, suffix sanitized to letters+digits since it lands
+  in the stream name and the watchdog's snapshot file names). The watchdog
+  watches every rung with its own aggregated alarm (variant down / frozen,
+  2-tick debounce, was-healthy rule - separate from the main output's light and
+  alarms; the restart button respawns all of the destination's encoders), the
+  bandwidth summary and the exported SETUP.md traffic math count the extra
+  pushes, and the nginx preview + per-destination command preview show the
+  exact rung lines.
+- **Relay metrics history + bandwidth watchdog** - one /stat read per minute
+  through the persistent SSH session feeds a 24h ring buffer (bw_in/bw_out per
+  stream, stock nginx-rtmp stat module); the Status board draws it as a line
+  chart (in green / out blue, autoscaled, no chart library) with a summary
+  line. Deliberately CLIENT-side (in-memory, restarts with the toolkit)
+  instead of the roadmap's on-server store: no bundle change, no redeploy, and
+  the toolkit is the only consumer. The bandwidth watchdog compares the
+  CONFIGURED outputs (main + ladder rungs, at 24/7) against a monthly GB
+  allowance (0 = off) and warns in the status bar while there is time to drop
+  bitrates.
+- **Config backups** - scheduled encrypted backups of config.json + the active
+  keys file: one .katbak per backup (PBKDF2-SHA256 210k -> AES-GCM; the
+  passphrase lives in secrets.json and is the only key), interval in hours
+  checked every 15 minutes, newest 15 kept, folder of choice (point it at a
+  synced folder for off-machine copies). Restore verifies the passphrase,
+  replaces BOTH files (the restored config decides where the keys file lands),
+  and restarts the toolkit. S3-compatible stores are out - the folder covers
+  self-hosted sync.
+- **Server doctor (+ firewall checklist + ufw fix)** - one SSH pass checks
+  Docker, the relay container, disk, RAM, MTU/MSS hardening, ufw and
+  relay-config freshness, plus one thing only the outside can answer: a TCP
+  probe of 1935 from the toolkit's machine. Results land as a checklist with
+  colored dots and a copy-paste fix command per failure (Deploy tab, below the
+  log). Provider detection (Oracle/AWS/Google/Hetzner via metadata) explains
+  when a security list sits OUTSIDE the box (Oracle: port changes happen in
+  the console, ufw is not enough). When ufw is active without a 1935 rule, an
+  "Apply ufw fix" button allows OpenSSH FIRST then 1935/tcp over SSH and
+  re-runs the checklist.
+- **Audio processing per destination (normalize + trim)** - every destination
+  gets "Normalize loudness to -16 LUFS" (one-pass loudnorm, the streaming
+  standard) and a per-destination volume trim (-30..+15 dB), applied after
+  normalization and inherited by all of the destination's ladder variants.
+  The clip-safety delay keeps running first in the audio chain, numbers are
+  formatted locale-safe, and the whole chain shows up in the per-destination
+  command preview. Music ducking was deliberately NOT shipped with this: it
+  needs a second OBS audio track whose behavior through nginx-rtmp is
+  unverified, and a half-working duck would kill encoders - it stays on the
+  roadmap as its own item.
+- **Title/category sync (Twitch first)** - the Relay tab's Go-live section
+  gained a Stream info panel: title + category boxes, prefilled once per
+  session from what the channel shows RIGHT NOW, category search-as-you-type
+  (debounced Helix search, pick a suggestion), and an Apply to Twitch button
+  that PATCHes the logged-in account's channel (channel:manage:broadcast was
+  already in the login scopes; older logins need one re-login). Only the
+  channel owner can set these - the error text says so plainly. Kick/YouTube
+  sync waits for their OAuth logins.
+- **Key rotation reminders** - each destination records when its key was last
+  marked rotated (new "Key rotated today" button next to the key in the
+  Output Studio); destination cards show the key age, and the Relay tab grows
+  an amber warning line listing every enabled destination past the interval
+  (configurable "days" setting, 0 = off) with the exact next step. Keys leak
+  via screenshots - now the toolkit nags before it matters.
+- **Per-platform status board** - a new Status board tab: one read-only grid
+  of every destination (on/off, platform, orientation, relay-side push state,
+  platform-side "actually live", viewer counts, variant count, key age) under
+  the relay/OBS status lights. Live checks were extended to fetch viewer
+  counts where a platform hands them out without a login (Twitch GraphQL,
+  Kick channel API, TikTok's live page) - YouTube needs a paid API key and
+  honestly shows nothing instead of a fake 0. The destinations grid on the
+  Relay tab gained the same Viewers column.
+- **Server resource view** - CPU/RAM/disk/network read from the HOST in the
+  same 10s SSH pass the watchdog already runs (two /proc/stat and /proc/net/dev
+  samples 0.4s apart for rates, /proc/meminfo + df -P for RAM and disk), shown
+  as one green summary line on the Status board. Unreadable values degrade to
+  "n/a", never a fake zero.
 
 ## On hold - TikTok chat connector (DELAYED UNTIL FURTHER NOTICE)
 
@@ -144,49 +225,40 @@ Standing decisions for everything in this phase (from Kats):
 
 ### Relay / output engine
 
-- **Per-destination quality ladder** - more than one variant per platform (e.g. 1080p60
-  main + 720p fallback), selected by name suffix.
 - **Audio processing per destination** - loudness normalization (-16 LUFS for platforms),
   per-destination volume trim, and music ducking on the portrait renditions (the old
-  "Later" item, folded in here).
+  "Later" item, folded in here). SHIPPED except ducking: the normalize + trim half is
+  live (see the Shipped entry); true music ducking needs a second audio track from OBS
+  whose reliability through nginx-rtmp is unverified - parked as its own item instead of
+  shipping an encoder-killing footgun.
 - **SRT ingest option** - SRT listener beside RTMP 1935 (loss-resilient, better for
-  flaky uplinks); OBS supports it natively.
+  flaky uplinks); OBS supports it natively. STAGED: needs relay bundle changes
+  (ffmpeg SRT listener - stock nginx-rtmp cannot speak SRT) + a live server test.
 - **HLS self-view endpoint** - the relay serves your own composed output as HLS on a
   loopback-only port; check it on your phone over the SSH tunnel without burning a
-  test stream.
-- **Relay metrics history** - poll nginx stats once a minute into a small on-server
-  store; per-destination bitrate/viewer graphs for the session. The bandwidth watchdog
-  (warn when configured outputs exceed the VPS traffic allowance) rides on this.
+  test stream. STAGED with SRT: also bundle changes (nginx HLS block + cleanup +
+  container paths) that should land with a tested deploy, not batched into this one.
+- **Relay metrics history** - SHIPPED (see Shipped; client-side ring buffer instead of
+  an on-server store, with the reasoning).
 
 ### Platform integrations
 
 - **Title/category sync** - set stream title + game/category once in the toolkit,
-  pushed to every platform that supports it (Twitch/Kick/YouTube APIs).
-- **Key rotation reminders** - destinations record when their stream key was last
-  rotated; the toolkit nags on a configurable interval (keys leak via screenshots).
+  pushed to every platform that supports it (Twitch/Kick/YouTube APIs). SHIPPED
+  Twitch-first (see Shipped); Kick/YouTube wait for their OAuth logins.
 - **OBS portrait-scene handling** - the leftover half of the old auto-switching
   bullet: automatic choreography for dedicated portrait scene sets, beyond the
   per-event scene switching that shipped.
-- **Per-platform status board** - the phase-one live checks extended into a grid:
-  relay-side health + platform-side "actually live" + viewer counts where an API
-  provides them, per destination, in one board.
 
 ### Ops & security
 
-- **Server doctor** - one panel that checks everything a fresh VPS needs: Docker, disk
-  space, kernel MTU state, firewall/security-list reachability of 1935 (and any viewer
-  ports), certificate/keys - and prints the fix command for each failure. Turns the
-  current scatter of diagnostics into a checklist.
-- **Firewall automation + provider detection** - users bring any VPS, so the toolkit
-  first detects what the server runs on, then recommends the right path: a guided
-  checklist (exact console steps, no cloud credentials stored) where rules can't be
-  edited over SSH (Oracle security lists), or automatic setup (UFW rules over SSH,
-  provider CLI integration where an API key is provided). Both paths end at "1935 (and
-  any viewer ports) reachable".
-- **Config backups** - scheduled encrypted backup of config + secrets to a folder of
-  choice (or S3-compatible store) with one-click restore.
-- **Server resource view** - CPU/RAM/network/disk read through the existing persistent
-  SSH session, shown next to the relay status (already polled anyway - just visualize it).
+- **Config backups** - SHIPPED (see Shipped).
+- **Server doctor** - SHIPPED (see Shipped).
+- **Firewall automation + provider detection** - SHIPPED as guided checklist +
+  ufw auto-fix inside the server doctor; what remains BY DESIGN is Oracle
+  security-list automation (a console action the toolkit cannot perform over
+  SSH - the doctor names it instead).
+- **Server resource view** - SHIPPED (see Shipped).
 
 ## Later (rated 8-9/10 - after the 10/10 wave)
 

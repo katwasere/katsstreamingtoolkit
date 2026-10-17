@@ -54,6 +54,7 @@ public static class RelayConfigGenerator
             else
                 sb.AppendLine($"            push \"{Url(dest, includeKeys)}\";");
             sb.AppendLine();
+            AppendVariantLines(sb, cfg, dest, includeKeys);
         }
 
         foreach (var dest in processed)
@@ -64,6 +65,7 @@ public static class RelayConfigGenerator
             else
                 sb.AppendLine($"            exec_push {BuildFfmpegArgs(cfg, dest, includeKeys)};");
             sb.AppendLine();
+            AppendVariantLines(sb, cfg, dest, includeKeys);
         }
 
         sb.AppendLine("        }");
@@ -83,8 +85,29 @@ public static class RelayConfigGenerator
         return sb.ToString();
     }
 
-    private static string Url(DestinationConfig dest, bool includeKeys = true)
-        => $"{dest.IngestUrl.TrimEnd('/')}/{(includeKeys ? dest.StreamKey : SecretsStore.MaskKey)}";
+    private static string Url(DestinationConfig dest, bool includeKeys = true, string? variantSuffix = null)
+        => $"{dest.IngestUrl.TrimEnd('/')}/{(includeKeys ? dest.StreamKey : SecretsStore.MaskKey)}{SuffixPart(variantSuffix)}";
+
+    // "-720p" for a ladder variant, "" for the main output. The suffix is
+    // sanitized at the config layer (lowercase letters/digits only).
+    private static string SuffixPart(string? variantSuffix)
+        => string.IsNullOrEmpty(variantSuffix) ? "" : "-" + variantSuffix;
+
+    // The ladder variant lines a destination contributes to nginx.conf's live
+    // application (or the Output Studio preview): one extra exec_push per
+    // variant, pushed under the stream key + suffix.
+    private static void AppendVariantLines(StringBuilder sb, AppConfig cfg, DestinationConfig dest, bool includeKeys, string indent = "            ")
+    {
+        foreach (var v in dest.EffectiveVariants())
+        {
+            sb.AppendLine($"{indent}# {dest.Name} - ladder variant {v.Suffix}");
+            if (string.IsNullOrWhiteSpace(dest.IngestUrl))
+                sb.AppendLine($"{indent}# (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
+            else
+                sb.AppendLine($"{indent}exec_push {BuildFfmpegArgs(cfg, dest, includeKeys, variant: v)};");
+            sb.AppendLine();
+        }
+    }
 
     // The exact lines this destination contributes to nginx.conf's live application,
     // e.g. for the Output Studio preview. Mirrors GenerateNginxConf byte for byte.
@@ -94,23 +117,32 @@ public static class RelayConfigGenerator
         if (string.IsNullOrWhiteSpace(dest.IngestUrl))
         {
             sb.AppendLine($"# {dest.Name}");
-            sb.Append("# (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
-            return sb.ToString();
+            sb.AppendLine("# (skipped: no ingest URL set - paste the RTMP URL from the platform's live-key page, then redeploy)");
+            AppendVariantLines(sb, cfg, dest, includeKeys, indent: "");
+            return sb.ToString().TrimEnd('\r', '\n');
         }
         if (dest.Orientation == Orientation.Portrait || dest.PortraitStyle == PortraitStyle.Custom)
         {
             sb.AppendLine($"# {dest.Name} ({dest.PortraitStyle})");
-            sb.Append($"exec_push {BuildFfmpegArgs(cfg, dest, includeKeys)};");
+            sb.AppendLine($"exec_push {BuildFfmpegArgs(cfg, dest, includeKeys)};");
         }
         else
         {
             sb.AppendLine($"# {dest.Name}");
-            sb.Append($"push \"{Url(dest, includeKeys)}\";");
+            sb.AppendLine($"push \"{Url(dest, includeKeys)}\";");
         }
-        return sb.ToString();
+        sb.AppendLine();
+        AppendVariantLines(sb, cfg, dest, includeKeys, indent: "");
+        return sb.ToString().TrimEnd('\r', '\n');
     }
 
     public static string SnapshotPath(Guid destinationId) => $"/tmp/kat-preview-{destinationId:N}.jpg";
+
+    // A ladder variant writes its own snapshot: the "-<suffix>" tail keeps the
+    // watchdog's per-file age probe and process match unambiguous (the main
+    // snapshot name is never a prefix of a variant's).
+    public static string SnapshotPath(Guid destinationId, string variantSuffix)
+        => $"/tmp/kat-preview-{destinationId:N}-{variantSuffix}.jpg";
 
     // Deliberately NOT under the kat-preview- prefix: the watchdog's age probe
     // globs /tmp/kat-preview-*.jpg, and the old kat-preview-test-* name made a
@@ -155,7 +187,7 @@ public static class RelayConfigGenerator
     public static string BuildLivePreviewCommand(AppConfig cfg, DestinationConfig dest, string tag, string streamName)
         => BuildFfmpegArgs(cfg, dest, includeKeys: true, livePreviewTag: $"vp{tag}", streamName: streamName);
 
-    private static string BuildFfmpegArgs(AppConfig cfg, DestinationConfig dest, bool includeKeys, bool forTest = false, string? livePreviewTag = null, string? streamName = null)
+    private static string BuildFfmpegArgs(AppConfig cfg, DestinationConfig dest, bool includeKeys, bool forTest = false, string? livePreviewTag = null, string? streamName = null, QualityVariantConfig? variant = null)
     {
         var up = cfg.Upstream;
         int srcW = Math.Max(2, up.Width);
@@ -163,14 +195,27 @@ public static class RelayConfigGenerator
         string pull = streamName is null
             ? "rtmp://127.0.0.1:1935/live/$name"
             : $"rtmp://127.0.0.1:1935/live/{streamName}";
-        string output = Url(dest, includeKeys);
+        string output = Url(dest, includeKeys, variant?.Suffix);
         int gop = Math.Max(1, up.Fps * Math.Max(1, dest.KeyframeSeconds));
         string preset = string.IsNullOrWhiteSpace(dest.EncoderPreset) ? "veryfast" : dest.EncoderPreset.Trim();
-        string audio = $"-c:a aac -b:a {dest.AudioBitrateKbps}k -ar 44100";
+        // Audio chain, shared by the main output and its ladder variants.
+        // Filter order: clip-safety delay first (unchanged semantics), then
+        // loudness normalization, then the plain gain. Numbers are formatted
+        // invariant - a German-locale server config must never contain "1,5dB".
+        var audioFilters = new List<string>();
         if (dest.DelaySeconds > 0)
-            audio += $" -af adelay={dest.DelaySeconds * 1000}:all=1";
-        string fps = dest.FpsOverride > 0 ? $" -r {dest.FpsOverride}" : "";
-        string video = $"-c:v libx264 -preset {preset} -b:v {dest.VideoBitrateKbps}k -maxrate {dest.VideoBitrateKbps}k -bufsize {dest.VideoBitrateKbps * 2}k -pix_fmt yuv420p -g {gop} -sc_threshold 0{fps}";
+            audioFilters.Add($"adelay={dest.DelaySeconds * 1000}:all=1");
+        if (dest.LoudnessNormalize)
+            audioFilters.Add("loudnorm=I=-16:TP=-1.5:LRA=11");
+        if (Math.Abs(dest.VolumeTrimDb) > 0.005)
+            audioFilters.Add(FormattableString.Invariant($"volume={dest.VolumeTrimDb:0.##}dB"));
+        string audio = $"-c:a aac -b:a {dest.AudioBitrateKbps}k -ar 44100";
+        if (audioFilters.Count > 0)
+            audio += $" -af {string.Join(",", audioFilters)}";
+        int bitrateKbps = variant?.VideoBitrateKbps ?? dest.VideoBitrateKbps;
+        int fpsOverride = variant is { FpsOverride: > 0 } ? variant.FpsOverride : dest.FpsOverride;
+        string fps = fpsOverride > 0 ? $" -r {fpsOverride}" : "";
+        string video = $"-c:v libx264 -preset {preset} -b:v {bitrateKbps}k -maxrate {bitrateKbps}k -bufsize {bitrateKbps * 2}k -pix_fmt yuv420p -g {gop} -sc_threshold 0{fps}";
         string extra = string.IsNullOrWhiteSpace(dest.ExtraArgs) ? "" : " " + dest.ExtraArgs.Trim();
         string delay = dest.DelaySeconds > 0 ? $",tpad=start_duration={dest.DelaySeconds}" : "";
 
@@ -185,7 +230,15 @@ public static class RelayConfigGenerator
         int outW = portraitOut ? 1080 : Math.Max(2, MakeEven(srcW));
         int outH = portraitOut ? 1920 : Math.Max(2, MakeEven(srcH));
 
-        if (dest.PortraitStyle == PortraitStyle.CenterCrop)
+        if (!portraitOut && dest.PortraitStyle != PortraitStyle.Custom)
+        {
+            // Landscape passthrough destination running a ladder variant: the main
+            // output stays nginx's plain push (OBS's encode, untouched) - the
+            // variant encoder re-encodes a downscaled copy of the feed.
+            inputs = "";
+            filterComplex = $"[0:v]scale={outW}:{outH},setsar=1{delay}[v]";
+        }
+        else if (dest.PortraitStyle == PortraitStyle.CenterCrop)
         {
             var (cropW, cropH, x, y) = ComputeCropRect(srcW, srcH);
             inputs = "";
@@ -228,13 +281,26 @@ public static class RelayConfigGenerator
 
         // The platform push and the preview snapshot both consume the composed
         // video, so split the label: [vmain] feeds the push, [vsnap] the JPEG.
-        filterComplex += ";[v]split=2[vmain][vsnap]";
+        // A ladder variant shrinks its [vmain] copy to the variant's short-side
+        // target first ([vsnap] stays full-size - same picture, one less scale).
+        string snapshotFile = variant is null ? SnapshotPath(dest.Id) : SnapshotPath(dest.Id, variant.Suffix);
+        if (variant != null)
+        {
+            double f = (double)variant.ShortSide / Math.Min(outW, outH);
+            int vw = Math.Max(2, MakeEven((int)Math.Round(outW * f)));
+            int vh = Math.Max(2, MakeEven((int)Math.Round(outH * f)));
+            filterComplex += $";[v]split=2[vvs][vsnap];[vvs]scale={vw}:{vh}[vmain]";
+        }
+        else
+        {
+            filterComplex += ";[v]split=2[vmain][vsnap]";
+        }
         // `0:a?` = optional mapping: with no audio track in the OBS feed (muted
         // or video-only capture) the old hard `-map 0:a` made ffmpeg exit
         // instantly with "Stream map '0:a' matches no streams", killing every
         // portrait/custom output while landscape pushes kept working.
         string pushMap = "-map \"[vmain]\" -map 0:a?";
-        string snap = $" -map \"[vsnap]\" -f image2 -r 2 -update 1 -q:v 5 {SnapshotPath(dest.Id)}";
+        string snap = $" -map \"[vsnap]\" -f image2 -r 2 -update 1 -q:v 5 {snapshotFile}";
 
         if (forTest)
         {

@@ -410,6 +410,41 @@ public partial class OutputStudio : UserControl
             dest.PortraitStyle = PortraitStyle.Custom; // PropertyChanged seeds the default Source cut
     }
 
+    // ---------------- quality ladder ----------------
+
+    private void VariantAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm?.SelectedDestination is not { } dest) return;
+        dest.Variants.Add(new QualityVariantConfig { Suffix = NextVariantSuffix(dest) });
+    }
+
+    private void VariantDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm?.SelectedDestination is not { } dest) return;
+        if ((sender as FrameworkElement)?.DataContext is QualityVariantConfig v)
+            dest.Variants.Remove(v);
+    }
+
+    // Key rotation reminders: the user is the only source of truth for "the key
+    // was rotated" - record it and the nag clock restarts from now.
+    private void KeyRotatedToday_Click(object sender, RoutedEventArgs e)
+    {
+        if (_vm?.SelectedDestination is { } dest)
+            dest.KeyRotatedAtUtc = DateTimeOffset.UtcNow;
+    }
+
+    // Suggests the first unused rung name so consecutive "Add variant" clicks
+    // give 720p, 480p, 360p... instead of colliding duplicates (which the
+    // config layer would silently ignore).
+    private static string NextVariantSuffix(DestinationConfig dest)
+    {
+        var used = dest.Variants.Select(v => v.Suffix).ToHashSet(StringComparer.Ordinal);
+        foreach (var candidate in new[] { "720p", "480p", "360p", "1080p", "540p" })
+            if (!used.Contains(candidate)) return candidate;
+        for (int i = 2; ; i++)
+            if (!used.Contains("720p" + i)) return "720p" + i;
+    }
+
     // ---------------- rendition preview ----------------
 
     private bool RoutesThroughFfmpeg(DestinationConfig dest)

@@ -22,15 +22,119 @@ public sealed record ServerBundleInfo(
 
 // What the watchdog sees on one pass: relay reachability, OBS publisher state,
 // which routed destinations' encoders are running, how stale each encoder's
-// preview snapshot is, and the relay's recent error log.
+// preview snapshot is, the quality-ladder variant encoders' state, host
+// resources, and the relay's recent error log.
 public sealed record RelayHealthSnapshot(
     bool Reachable,
     bool Receiving,
     HashSet<Guid> Encoders,
     Dictionary<Guid, int> SnapshotAges,
-    string LogTail)
+    string LogTail,
+    Dictionary<Guid, List<VariantHealth>> Variants,
+    ServerResources? Resources)
 {
-    public static readonly RelayHealthSnapshot Down = new(false, false, new HashSet<Guid>(), new Dictionary<Guid, int>(), "");
+    public static readonly RelayHealthSnapshot Down = new(false, false, new HashSet<Guid>(), new Dictionary<Guid, int>(), "",
+        new Dictionary<Guid, List<VariantHealth>>(), null);
+}
+
+// One quality-ladder variant's facts on one destination: is its encoder
+// process alive, and how old is its snapshot (null = missing/unreadable,
+// which is never treated as "brand new").
+public sealed record VariantHealth(string Suffix, bool ProcessAlive, int? SnapshotAge);
+
+// Host resources sampled by the same SSH pass the watchdog runs. Rates are
+// computed from two samples inside the remote script (CPU from /proc/stat,
+// network from /proc/net/dev); null fields mean "unreadable", never 0.
+public sealed record ServerResources(
+    double CpuPercent,
+    double RamUsedGb,
+    double RamTotalGb,
+    double DiskUsedPercent,
+    double NetRxMbps,
+    double NetTxMbps)
+{
+    public static ServerResources? Parse(string[] lines)
+    {
+        try
+        {
+            // Lines, in order: cpu sample 1, cpu sample 2, "rx tx" 1, "rx tx" 2,
+            // then MemTotal/MemAvailable lines, then the df -P line for /.
+            if (lines.Length < 6) return null;
+            double? cpu = ComputeCpuPercent(lines[0], lines[1]);
+            var (rxMbps, txMbps) = ComputeNetMbps(lines[2], lines[3]);
+            double ramTotal = 0, ramAvail = 0;
+            foreach (var line in lines[4..])
+            {
+                if (line.StartsWith("MemTotal:", StringComparison.Ordinal))
+                    ramTotal = MemInfoKb(line) / 1024.0 / 1024.0;
+                else if (line.StartsWith("MemAvailable:", StringComparison.Ordinal))
+                    ramAvail = MemInfoKb(line) / 1024.0 / 1024.0;
+            }
+            double disk = -1;
+            var dfLine = lines.LastOrDefault(l => l.Contains('%'));
+            if (dfLine != null)
+            {
+                var parts = dfLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                string pct = parts.FirstOrDefault(p => p.EndsWith('%')) ?? "";
+                if (pct.Length > 1 && double.TryParse(pct[..^1], out double dp))
+                    disk = dp;
+            }
+            if (cpu is null && ramTotal <= 0 && disk < 0 && rxMbps is < 0) return null;
+            return new ServerResources(cpu ?? -1, Math.Max(0, ramTotal - ramAvail), ramTotal, disk, rxMbps, txMbps);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static double? ComputeCpuPercent(string first, string second)
+    {
+        // A /proc/stat "cpu" line: user nice system idle iowait irq softirq
+        // steal ... (ticks). Busy = everything except idle + iowait.
+        static long[]? Ticks(string line)
+        {
+            if (!line.StartsWith("cpu", StringComparison.Ordinal)) return null;
+            var list = new List<long>();
+            foreach (var f in line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1))
+            {
+                if (long.TryParse(f, out long v)) list.Add(v); else break;
+            }
+            return list.Count >= 4 ? list.ToArray() : null;
+        }
+        var a = Ticks(first);
+        var b = Ticks(second);
+        if (a == null || b == null || a.Length != b.Length) return null;
+        long total = 0, busy = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            long delta = b[i] - a[i];
+            if (delta < 0) return null;
+            total += delta;
+            if (i != 3 && i != 4) busy += delta;
+        }
+        return total <= 0 ? null : Math.Clamp(100.0 * busy / total, 0, 100);
+    }
+
+    private static (double RxMbps, double TxMbps) ComputeNetMbps(string first, string second)
+    {
+        var a = first.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var b = second.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length < 2 || b.Length < 2) return (-1, -1);
+        if (!ulong.TryParse(a[0], out ulong rx1) || !ulong.TryParse(a[1], out ulong tx1) ||
+            !ulong.TryParse(b[0], out ulong rx2) || !ulong.TryParse(b[1], out ulong tx2))
+            return (-1, -1);
+        const double bitsPerMbps = 1024.0 * 1024.0; // bytes -> Mbps over 0.4s
+        double rx = Math.Max(0, (double)(rx2 - rx1)) * 8 / 0.4 / bitsPerMbps;
+        double tx = Math.Max(0, (double)(tx2 - tx1)) * 8 / 0.4 / bitsPerMbps;
+        return (rx, tx);
+    }
+
+    private static long MemInfoKb(string line)
+    {
+        string digits = new(line.SkipWhile(c => !char.IsDigit(c)).TakeWhile(char.IsDigit).ToArray());
+        return long.TryParse(digits, out long v) ? v : 0;
+    }
 }
 
 // SSH/SFTP operations for the Deploy tab. Everything runs on a background thread;
@@ -485,11 +589,28 @@ public static class DeployService
             "now=$(date +%s); for f in /tmp/kat-preview-*.jpg; do [ -f \"$f\" ] || continue; m=$(stat -c %Y \"$f\" 2>/dev/null) || continue; echo \"$(basename \"$f\") $((now-m))\"; done";
         const string logTail = "tail -n 60 /var/log/nginx/error.log";
 
+        // Host resources, sampled within the same SSH pass: two /proc/stat and
+        // /proc/net/dev snapshots 0.4s apart give CPU% and network rates; RAM
+        // and the root disk come from /proc/meminfo + df -P.
+        const string resources =
+            "c1=$(head -n1 /proc/stat)\n" +
+            "n1=$(awk -F'[: ]+' '/:/ && $1!=\"lo\" {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev)\n" +
+            "sleep 0.4\n" +
+            "c2=$(head -n1 /proc/stat)\n" +
+            "n2=$(awk -F'[: ]+' '/:/ && $1!=\"lo\" {rx+=$2; tx+=$10} END {print rx+0, tx+0}' /proc/net/dev)\n" +
+            "echo \"$c1\"\n" +
+            "echo \"$c2\"\n" +
+            "echo \"$n1\"\n" +
+            "echo \"$n2\"\n" +
+            "grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null\n" +
+            "df -P / 2>/dev/null | tail -n1\n";
+
         static string B64(string s) => Convert.ToBase64String(Encoding.UTF8.GetBytes(s));
 
         string procsB64 = B64(procs);
         string agesB64 = B64(ages);
         string logB64 = B64(logTail);
+        string resB64 = B64(resources);
 
         // `A | docker exec ... || A | sudo -n docker exec ...` - pipe binds
         // tighter than ||, so the sudo variant only runs when the plain docker
@@ -504,7 +625,9 @@ public static class DeployService
             "echo AGES\n" +
             $"echo {agesB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {agesB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n" +
             "echo LOG\n" +
-            $"echo {logB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {logB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n";
+            $"echo {logB64} | base64 -d | docker exec -i kat-relay sh 2>/dev/null || echo {logB64} | base64 -d | sudo -n docker exec -i kat-relay sh 2>/dev/null\n" +
+            "echo RES\n" +
+            "echo " + resB64 + " | base64 -d | sh\n";
 
         return "echo " + B64(hostScript) + " | base64 -d | sh";
     }
@@ -515,13 +638,14 @@ public static class DeployService
         var procs = new List<string>();
         var ageLines = new List<string>();
         var logLines = new List<string>();
+        var resLines = new List<string>();
 
         string section = "";
         foreach (var rawLine in output.Split('\n'))
         {
             string line = rawLine.TrimEnd('\r');
             string trimmed = line.Trim();
-            if (trimmed is "STAT" or "PROCS" or "AGES" or "LOG")
+            if (trimmed is "STAT" or "PROCS" or "AGES" or "LOG" or "RES")
             {
                 section = trimmed;
                 continue;
@@ -532,6 +656,7 @@ public static class DeployService
                 case "PROCS": if (trimmed.Length > 0) procs.Add(trimmed); break;
                 case "AGES": if (trimmed.Length > 0) ageLines.Add(trimmed); break;
                 case "LOG": if (trimmed.Length > 0) logLines.Add(trimmed); break;
+                case "RES": if (trimmed.Length > 0) resLines.Add(trimmed); break;
             }
         }
 
@@ -548,33 +673,67 @@ public static class DeployService
         if (!xml.Contains("<rtmp"))
             return RelayHealthSnapshot.Down;
 
-        var routed = cfg.Destinations
-            .Where(d => d.Enabled &&
-                        (d.Orientation == Orientation.Portrait || d.PortraitStyle == PortraitStyle.Custom) &&
-                        !string.IsNullOrWhiteSpace(d.IngestUrl))
+        var resources = ServerResources.Parse(resLines.ToArray());
+
+        var watched = cfg.Destinations
+            .Where(d => d.Enabled && !string.IsNullOrWhiteSpace(d.IngestUrl))
             .ToList();
 
         var encoders = new HashSet<Guid>();
         var ages = new Dictionary<Guid, int>();
-        foreach (var d in routed)
+        var variants = new Dictionary<Guid, List<VariantHealth>>();
+        foreach (var d in watched)
         {
             string token = d.Id.ToString("N");
-            if (procs.Any(p => p.Contains("kat-preview-" + token, StringComparison.Ordinal)))
-                encoders.Add(d.Id);
-            foreach (var ageLine in ageLines)
+            bool routed = d.Orientation == Orientation.Portrait || d.PortraitStyle == PortraitStyle.Custom;
+
+            if (routed)
             {
-                // "<file> <age-seconds>"
-                int sp = ageLine.IndexOf(' ');
-                if (sp <= 0) continue;
-                if (!ageLine[..sp].Contains(token, StringComparison.Ordinal)) continue;
-                if (int.TryParse(ageLine[(sp + 1)..].Trim(), out int age) && age >= 0)
-                    ages[d.Id] = age;
-                break;
+                // ".jpg" terminator: a variant encoder's command line contains
+                // "kat-preview-<id>-720p.jpg", which also contains the bare
+                // token - without the terminator a lone variant could pass for
+                // the main encoder being alive.
+                if (procs.Any(p => p.Contains($"kat-preview-{token}.jpg", StringComparison.Ordinal)))
+                    encoders.Add(d.Id);
+                string mainFile = $"kat-preview-{token}.jpg";
+                foreach (var ageLine in ageLines)
+                {
+                    // "<file> <age-seconds>" - exact basename match: a variant
+                    // snapshot's name contains the token too.
+                    int sp = ageLine.IndexOf(' ');
+                    if (sp <= 0) continue;
+                    if (!string.Equals(ageLine[..sp], mainFile, StringComparison.Ordinal)) continue;
+                    if (int.TryParse(ageLine[(sp + 1)..].Trim(), out int age) && age >= 0)
+                        ages[d.Id] = age;
+                    break;
+                }
             }
+
+            // Ladder variants are watched for every enabled destination with an
+            // ingest (passthrough destinations can run variant encoders too).
+            var eff = d.EffectiveVariants();
+            if (eff.Count == 0) continue;
+            var states = new List<VariantHealth>();
+            foreach (var v in eff)
+            {
+                string file = $"kat-preview-{token}-{v.Suffix}.jpg";
+                bool alive = procs.Any(p => p.Contains(file, StringComparison.Ordinal));
+                int? age = null;
+                foreach (var ageLine in ageLines)
+                {
+                    int sp = ageLine.IndexOf(' ');
+                    if (sp <= 0) continue;
+                    if (!string.Equals(ageLine[..sp], file, StringComparison.Ordinal)) continue;
+                    if (int.TryParse(ageLine[(sp + 1)..].Trim(), out int a) && a >= 0) age = a;
+                    break;
+                }
+                states.Add(new VariantHealth(v.Suffix, alive, age));
+            }
+            variants[d.Id] = states;
         }
 
         return new RelayHealthSnapshot(true, xml.Contains("<publishing"), encoders, ages,
-            string.Join('\n', logLines));
+            string.Join('\n', logLines), variants, resources);
     }
 
     // Lines from the relay log that indicate a real failure (used for the
