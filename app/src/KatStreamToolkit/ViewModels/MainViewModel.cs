@@ -1953,11 +1953,19 @@ public class MainViewModel : ObservableBase
         // The lights are status OUTPUT, not config input: Refresh() regenerates
         // the whole nginx preview and queues a config+secrets save, and the
         // watchdog/live checks rewrite the lights every 10s/30s - refreshing
-        // for each flip was pure churn (BUG-38).
+        // for each flip was pure churn (BUG-38). BUG-82: KeyAgeText and
+        // ViewersText are the same kind of output - and MUST be ignored here,
+        // because RaiseKeyRotation/RefreshKeyAge and the live-check Viewers
+        // update raise them INSIDE Refresh(); letting them re-enter Refresh
+        // recursed Refresh -> KeyAgeText raise -> Refresh ... until the stack
+        // blew up at startup ("a new guard page for the stack cannot be
+        // created", crash within seconds of launch).
         if (e.PropertyName is nameof(DestinationConfig.PushLight)
             or nameof(DestinationConfig.PushLightText)
             or nameof(DestinationConfig.LiveLight)
-            or nameof(DestinationConfig.LiveLightText))
+            or nameof(DestinationConfig.LiveLightText)
+            or nameof(DestinationConfig.KeyAgeText)
+            or nameof(DestinationConfig.ViewersText))
             return;
 
         if (e.PropertyName is nameof(DestinationConfig.Layers) && sender is DestinationConfig d)

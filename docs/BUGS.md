@@ -1168,3 +1168,45 @@ doctor. Harness re-run after fixes: 30/30.
 - **Files**: `MainViewModel.RunServerDoctorAsync`.
 - **Fix**: the flag is set inside the dispatcher block that installs the
   checklist.
+
+### BUG-82. Startup stack overflow: Refresh re-entered itself via the key-age label - [FIXED]
+- **Found**: 2026-10-17. Any build of the phase-two batch (9761685/c3041e6)
+  died at launch: "A new guard page for the stack cannot be created"
+  (0xC00000FD), within seconds, before the window ever appeared.
+- **Cause**: Refresh() ends by calling RaiseKeyRotation(), which calls
+  d.RefreshKeyAge() per destination; that raises KeyAgeText; the
+  DestinationPropertyChanged handler did NOT ignore KeyAgeText, so every
+  raise re-entered Refresh() - Refresh -> RaiseKeyRotation -> KeyAgeText ->
+  DestPropChanged -> Refresh -> ... until the stack died (fresh stack page
+  reservation failing). ViewersText has the same shape via the live-check
+  viewer update. Both are status OUTPUT, not config input - exactly the
+  BUG-38 class the PushLight/LiveLight ignores already cover.
+- **Diagnosis** (bisect + %TEMP% kat-bisect.log stage logging): old VM +
+  anything = healthy; new VM + anything = crash; disabling G3
+  (RaiseKeyRotation in Refresh + LiveCheckTick) was the healthy combination -
+  the recursion lived in Refresh -> RaiseKeyRotation.
+- **Fix**: DestinationPropertyChanged ignores KeyAgeText and
+  ViewersText alongside the lights (early return before the Layers/Variants
+  rehook and Refresh). Verified with a title-checked 35s launch: the bisect
+  log shows six sequential Refresh runs, zero re-entry.
+- **Note**: with the recursion gone, a SECOND startup crash surfaced that the
+  stack overflow had always masked - BUG-83 below. Every "still crashes after
+  the ignore list" observation during the bisect was that bug, not this one
+  (the Windows Event Log's .NET Runtime records prove it).
+
+### BUG-83. MetricsChart wrote to its own frozen Pen - instant startup crash once BUG-82 was out of the way - [FIXED]
+- **Cause**: MetricsChart froze its static pens (FreezePen), then the
+  constructor did GridPen.DashStyle = DashStyles.Dash; on the already
+  frozen pen - InvalidOperationException: Cannot set a property on object
+  'System.Windows.Media.Pen' because it is in a read-only state, thrown
+  while MainWindow.xaml (line 343) instantiated the control, i.e. a
+  deterministic XamlParseException crash at every launch of every build that
+  contains the chart (shipped in 9761685 with the metrics feature).
+- **Found**: via the Application event log (.NET Runtime, Id 1026) after
+  BUG-82's fix stopped the earlier crash from hiding this one.
+- **Fix**: the dash style is applied inside FreezePen BEFORE Freeze()
+  (new optional DashStyle parameter; the mutating constructor is gone).
+- **Lesson recorded**: a "cannot set - read-only" throw inside a XAML load
+  names a frozen Freezable being mutated; and when one startup crash is
+  fixed, re-read the event log - the next crash in line may have been there
+  all along.

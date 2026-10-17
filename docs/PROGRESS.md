@@ -1,4 +1,46 @@
-# Session progress - 2026-10-11 (phase-two push #2, handoff note)
+﻿# Session progress - 2026-10-17 (BUG-82/83 FIXED - startup crashes resolved)
+
+## The blocker: startup crash of the phase-two build - RESOLVED
+
+Any build of the phase-two batch (9761685 / c3041e6) crashed at launch. TWO
+stacked startup bugs, both fixed and launch-verified (title-checked 35s
+health check, twice - with instrumentation and after stripping it):
+
+- **BUG-82 - stack overflow (0xC00000FD)**: Refresh -> RaiseKeyRotation ->
+  KeyAgeText raise -> DestPropChanged -> Refresh recursion. Fixed by adding
+  KeyAgeText + ViewersText to DestinationPropertyChanged's ignore list
+  (status OUTPUT, same class as the BUG-38 light ignores). The bisect log
+  proved six clean Refresh runs with zero re-entry after the fix.
+- **BUG-83 - MetricsChart wrote to its own frozen Pen**
+  (GridPen.DashStyle = DashStyles.Dash in the ctor AFTER FreezePen):
+  deterministic XamlParseException at every launch, shipped in 9761685, and
+  MASKED by the overflow until BUG-82 was fixed - the event log (.NET
+  Runtime Id 1026) named it once the first crash was out of the way. Fixed
+  by applying the dash style before Freeze.
+
+Lesson for the next session: after fixing a startup crash, CHECK THE EVENT
+LOG for the next crash in line - the bisect's "still crashes" data points
+after the ignore list landed were BUG-83, not a failed BUG-82 fix.
+
+## State
+
+- BisectLog instrumentation fully stripped (MainViewModel + Models.cs); the
+  ignore-list fix and both BUG-83 edits remain. No bypasses left: 
+  SetResourceSummary / HandleVariantHealth are active.
+- Clean rebuild: 0 warnings, 0 errors. Launch: HEALTHY, build stamp
+  2026-10-17 15:55.
+- Committed with updated BUGS.md (BUG-82 + BUG-83 entries).
+
+## Still open (unchanged from the previous handoff)
+
+- Kat's full manual verification checklist (see the 2026-10-11 section
+  below), starting with the backup restore test (BUG-76 fix) and the server
+  doctor.
+- Ladder/round-2 items and the staged HLS self-view + SRT ingest work.
+
+## Earlier 2026-10-11 handoff (phase-two batch details, test checklist)
+
+
 
 ## Where we are
 

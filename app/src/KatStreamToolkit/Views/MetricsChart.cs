@@ -23,15 +23,10 @@ public class MetricsChart : FrameworkElement
         set => SetValue(SamplesProperty, value);
     }
 
-    private static readonly Pen GridPen = FreezePen(new SolidColorBrush(Color.FromRgb(0x2A, 0x2F, 0x37)));
+    private static readonly Pen GridPen = FreezePen(new SolidColorBrush(Color.FromRgb(0x2A, 0x2F, 0x37)), DashStyles.Dash);
     private static readonly Pen InPen = FreezePen(new SolidColorBrush(Color.FromRgb(0x8F, 0xD6, 0x94)));
     private static readonly Pen OutPen = FreezePen(new SolidColorBrush(Color.FromRgb(0x6A, 0xB0, 0xF3)));
     private static readonly Brush TextBrush = FreezeBrush(new SolidColorBrush(Color.FromRgb(0x9A, 0xA0, 0xA8)));
-
-    public MetricsChart()
-    {
-        GridPen.DashStyle = DashStyles.Dash;
-    }
 
     protected override void OnRender(DrawingContext dc)
     {
@@ -100,10 +95,11 @@ public class MetricsChart : FrameworkElement
             typeface, size, brush, 1.25), at);
     }
 
-    private static Pen FreezePen(SolidColorBrush b)
+    private static Pen FreezePen(SolidColorBrush b, DashStyle? dash = null)
     {
         b.Freeze();
         var p = new Pen(b, 1.2);
+        if (dash != null) p.DashStyle = dash;
         p.Freeze();
         return p;
     }
