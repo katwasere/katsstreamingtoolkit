@@ -1,22 +1,32 @@
-﻿# Session progress - 2026-10-17 (BUG-82/83 FIXED - startup crashes resolved)
+﻿# Session progress - 2026-10-18 (RELEASE-READY - all automatable checks green)
 
-## The blocker: startup crash of the phase-two build - RESOLVED
+## State
 
-Any build of the phase-two batch (9761685 / c3041e6) crashed at launch. TWO
-stacked startup bugs, both fixed and launch-verified (title-checked 35s
-health check, twice - with instrumentation and after stripping it):
+- BUG-82 (startup stack overflow) + BUG-83 (MetricsChart frozen-Pen crash)
+  fixed and committed (7e24b97); BUG-84 (doctor false-warned MTU/MSS
+  hardening) found during release testing, fixed, committed (45e293f).
+- Release-tested against the live relay (140.238.99.143, Hetzner): current
+  config DEPLOYED (server was pre-phase-two + unhardened before this),
+  doctor all green, config hash matches, 1935 reachable, metrics parse,
+  phase-two generator output (test 720p rung + loudnorm) accepted by real
+  nginx and verified in nginx -T, then the user's real config redeployed.
+- App soak: 76 min through every timer tick, zero crash records.
+- Twitch API: prefill + category search verified with the stored login
+  (no re-login needed).
+- Kat confirmed live: Server host set, GO-LIVE WORKS, stream info works.
+- Harness (C:\Users\david\AppData\Local\Temp\kilo\ladder-test): 30/30.
+- Relay-verify harness (Temp\kilo\relay-verify): 10/10 - reusable for any
+  future release check (read-only). relay-deploy harness exists too.
 
-- **BUG-82 - stack overflow (0xC00000FD)**: Refresh -> RaiseKeyRotation ->
-  KeyAgeText raise -> DestPropChanged -> Refresh recursion. Fixed by adding
-  KeyAgeText + ViewersText to DestinationPropertyChanged's ignore list
-  (status OUTPUT, same class as the BUG-38 light ignores). The bisect log
-  proved six clean Refresh runs with zero re-entry after the fix.
-- **BUG-83 - MetricsChart wrote to its own frozen Pen**
-  (GridPen.DashStyle = DashStyles.Dash in the ctor AFTER FreezePen):
-  deterministic XamlParseException at every launch, shipped in 9761685, and
-  MASKED by the overflow until BUG-82 was fixed - the event log (.NET
-  Runtime Id 1026) named it once the first crash was out of the way. Fixed
-  by applying the dash style before Freeze.
+## Remaining for the release session (all small, Kat-timed)
+
+- One-click BACKUP RESTORE test (only ship-feature never clicked end-to-end;
+  crypto round-trip is harness-tested). Keep a copy of config.json first.
+- Version stamp decision (exe still 0.2.0.0 - bump for first release?).
+- Push main if origin should carry the release.
+- Deliberately NOT in this release: poll widget (parked, non-affiliate
+  channel), Kick/YouTube OAuth (in flight separately), HLS self-view + SRT
+  ingest (staged, needs their own tested deploy), music ducking (parked).
 
 Lesson for the next session: after fixing a startup crash, CHECK THE EVENT
 LOG for the next crash in line - the bisect's "still crashes" data points
