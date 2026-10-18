@@ -19,8 +19,10 @@ public partial class MainWindow : Window
         _vm = (MainViewModel)DataContext;
         // Build stamp in the title: a screenshot of this window always shows
         // exactly which build is running - stale binaries caused real
-        // confusion during debugging.
-        Title += $"  -  build {File.GetLastWriteTime(GetType().Assembly.Location):yyyy-MM-dd HH:mm}";
+        // confusion during debugging. The release version rides along so a
+        // screenshot can also be tied to a release.
+        Title += $"  -  v{GetType().Assembly.GetName().Version}"
+               + $"  -  build {File.GetLastWriteTime(GetType().Assembly.Location):yyyy-MM-dd HH:mm}";
         Loaded += OnLoaded;
         Closing += OnClosing;
         Closed += (_, _) =>

@@ -24,6 +24,25 @@
   crypto round-trip is harness-tested). Keep a copy of config.json first.
 - Version stamp decision (exe still 0.2.0.0 - bump for first release?).
 - Push main if origin should carry the release.
+
+## RELEASE - v1.0.0 (2026-10-18)
+
+- Version bumped 0.2.0 -> 1.0.0 (csproj); the title bar now shows
+  `v<assembly version> - build <timestamp>` so screenshots identify the
+  release too.
+- Backup-restore click test deliberately SKIPPED for this release (Kats
+  decision): the crypto round-trip (create + restore + wrong-passphrase
+  reject) is harness-tested; the click-through remains on the verification
+  checklist for the first post-release session. Keep a copy of config.json
+  before the first real restore attempt.
+- Release content: everything in Shipped (docs/ROADMAP.md) incl. the
+  phase-two wave (ladder, audio normalize/trim, stream info, key rotation,
+  status board, resource view, metrics chart + bandwidth watchdog, backups,
+  server doctor) and BUG-1..84 fixes. Deliberately NOT in this release:
+  poll widget (parked, non-affiliate channel), Kick/YouTube OAuth (in
+  flight), HLS self-view + SRT ingest (staged for their own tested deploy),
+  music ducking (parked).
+- Tagged v1.0.0 and pushed to origin.
 - Deliberately NOT in this release: poll widget (parked, non-affiliate
   channel), Kick/YouTube OAuth (in flight separately), HLS self-view + SRT
   ingest (staged, needs their own tested deploy), music ducking (parked).
