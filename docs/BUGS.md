@@ -1210,3 +1210,42 @@ doctor. Harness re-run after fixes: 30/30.
   names a frozen Freezable being mutated; and when one startup crash is
   fixed, re-read the event log - the next crash in line may have been there
   all along.
+
+### BUG-84. Server doctor false-warned "MTU/MSS hardening not detected" on a hardened box - [FIXED]
+- **Found**: 2026-10-18, live release-testing against the real relay. The
+  deploy had JUST applied the hardening ("MSS clamp on OUTPUT+FORWARD,
+  tcp_mtu_probing=1" in the deploy log; verified on the server: both mangle
+  rules present, sysctl.d file written, boot unit enabled) - and the doctor
+  run seconds later still warned "not detected".
+- **Cause**: two stacked shell mistakes in the doctor's MSS probe, all in one
+  line: \iptables -t mangle -S OUTPUT 2>/dev/null | grep ... | head -n1 ||
+  sysctl ... || echo unknown\. (1) \head -n1\ exits 0 even on EMPTY input,
+  so the \\\||\\\ fallbacks were unreachable - an empty probe could never fall
+  through to the sysctl check. (2) the probe ran as the plain SSH user; on
+  nft-backed iptables a non-root read fails with "Permission denied" (stderr
+  suppressed), so the section was empty on every non-root deploy - exactly
+  the toolkit's default setup (opc@ubuntu). My first fix kept the same trap
+  in the then-branch (detected via sudo, printed via non-root iptables).
+- **Fix**: the probe is now an if/else on a REAL exit status:
+  \if iptables ... | grep -q clamp-mss-to-pmtu || sudo -n iptables ... |
+  grep -q clamp-mss-to-pmtu; then echo 'clamp-mss-to-pmtu rule present';
+  else sysctl -n net.ipv4.tcp_mtu_probing || echo unknown; fi\. Root and
+  non-root SSH users both read correctly; a genuinely unhardened box still
+  warns via the sysctl value (0/unknown).
+- **Lesson**: never put \\\head\\\ between a filter and a \\\||\\\ fallback - head
+  always exits 0 and swallows the failure the fallback exists for. Same
+  pattern at line 147 (docker --version) audited: benign, the C# fallback
+  lands on the same verdict.
+
+## Release-testing session (2026-10-18) - what was verified beyond the harness
+
+- 76-minute app soak through every timer tick: no crash records.
+- Full deploy cycle against the live relay (140.238.99.143, Hetzner): current
+  config deployed, doctor all green, config matches, 1935 reachable from
+  outside, metrics /stat parses.
+- Phase-two generator output accepted by the real nginx: a test 720p rung +
+  loudnorm chain deployed (in-memory only), verified present in nginx -T,
+  relay healthy, then the user's real config redeployed over it.
+- Twitch API paths with the stored login: prefill + category search work
+  (no re-login needed). The Apply PATCH and everything needing a live stream
+  (viewer counts, audible audio, OBS switching) remain Kat-timed.

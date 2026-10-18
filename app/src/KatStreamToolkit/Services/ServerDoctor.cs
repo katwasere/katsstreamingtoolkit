@@ -152,7 +152,18 @@ public static class ServerDoctor
             "echo '### MEM'",
             "awk '/MemTotal/{print $2}' /proc/meminfo",
             "echo '### MSS'",
-            "iptables -t mangle -S OUTPUT 2>/dev/null | grep clamp-mss-to-pmtu | head -n1 || sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null || echo unknown",
+            // BUG-84: the old probe was "iptables ... | grep ... | head -n1 ||
+            // sysctl ..." - head exits 0 even on EMPTY input, so the sysctl
+            // fallback never ran and any non-root read (nft "Permission
+            // denied" on stderr, suppressed) left the MSS section empty ->
+            // permanent false "hardening not detected" even on a hardened
+            // box (found live on the Hetzner relay right after a deploy that
+            // HAD applied the clamp). The grep -q if/else keeps a real exit
+            // status in the condition; plain iptables OR sudo -n iptables
+            // covers root and non-root SSH users alike.
+            "if iptables -t mangle -S OUTPUT 2>/dev/null | grep -q clamp-mss-to-pmtu || sudo -n iptables -t mangle -S OUTPUT 2>/dev/null | grep -q clamp-mss-to-pmtu; " +
+            "then echo 'clamp-mss-to-pmtu rule present'; " +
+            "else sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null || echo unknown; fi",
             "echo '### UFW'",
             // BUG-78: no head - a box with 20+ rules cut the 1935 line off and
             // the doctor flagged a healthy firewall as blocking. Full status;
