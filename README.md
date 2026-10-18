@@ -1,5 +1,10 @@
 # KAT's Streaming Toolkit
 
+![Release](https://img.shields.io/github/v/release/katwasere/katsstreamingtoolkit)
+![License](https://img.shields.io/github/license/katwasere/katsstreamingtoolkit)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6)
+![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4)
+
 **One stream in, every platform out - free.**
 
 A set of tools that handle all the streaming stuff, because streams shouldn't cost rent.
@@ -35,6 +40,11 @@ flowchart LR
 | **Setup guide** | Zero-to-live VPS walkthrough written for non-ops people | `server/VPS-SETUP.md` |
 
 ## Quick start
+
+**You need**: a Windows 10/11 PC (x64) with OBS, a VPS with Docker (any
+provider - the built-in server doctor checks the firewall/MTU pitfalls for
+you), and your platforms' stream keys. Building from source needs the
+[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 1. **Build the app** (one time, 64-bit):
    ```powershell
@@ -88,24 +98,59 @@ The toolkit is a **Windows desktop app on purpose**:
 The relay side is deliberately *not* C#: it's nginx-rtmp + ffmpeg in Docker,
 because battle-tested streaming servers beat anything an app could embed.
 
-## Status
+## Status - v1.0.0
 
-- Working: relay generation + export, Twitch/Kick/YouTube chat overlays
-  (per-overlay font, chat and alert colors), Twitch account login (OAuth):
-  chat replies, `!commands` with OBS scene switching, right-click moderation
-  (timeout/ban/delete + slow mode) and a shared chat filter - Kick/YouTube
-  stay read-only until their own OAuth work; portrait renditions (crop +
-  blurred), traffic estimator, hotkey lock/unlock, go-live orchestration
-  (one-button Start/End stream that verifies the relay and OBS), the 10s
-  watchdog (per-condition alarms from the relay log, frozen-encoder
-  auto-restart, restart buttons), per-destination platform-side live checks,
-  alerts (follows/subs/raids) as overlay lines + OBS scroll banner +
-  automatic OBS scene changes per event, and a poll/prediction widget for
-  your active Twitch poll.
-- On the roadmap: Kick/YouTube logins, title/category sync - see
-  `docs/ROADMAP.md`. TikTok chat is written but DELAYED until further notice
-  (cannot be tested right now due to quirks in TikTok's streaming setup);
-  TikTok video needs none of it and works today.
+Everything below ships and is in daily use on a live stream.
+
+**Relay & outputs**
+
+- One-click SSH deploy of the nginx-rtmp + ffmpeg Docker bundle, with a
+  streaming deploy log (build steps appear as they happen).
+- **Output Studio**: visual destination editor - drag-to-reorder pipeline
+  cards, encode tuning (preset/fps/bitrate/delay), OBS-style layer
+  compositing for portrait outputs (input cuts, transparent PNGs, blur,
+  backgrounds), and a live server-output preview of exactly what the
+  platform receives.
+- **Per-destination quality ladder**: extra downscaled rungs (e.g. 1080p
+  main + 720p/480p) pushed beside the main output, watchdog-monitored.
+- **Audio per destination**: loudness normalization (-16 LUFS) + volume
+  trim, inherited by ladder rungs.
+- **Go-live**: one-button Start/End stream via obs-websocket (verifies the
+  relay, drives OBS, confirms arrival), plus Twitch title/category sync.
+- **Watchdog**: 10s health pass with per-condition alarms built from the
+  relay log, frozen-encoder auto-restart, per-alarm restart buttons,
+  optional alarm sound.
+
+**Chat, moderation & alerts**
+
+- Transparent click-through chat overlays: merged or per-platform,
+  Twitch/Kick/YouTube, per-overlay font + colors, `Ctrl+Alt+C` locks
+  everything.
+- **Moderation** (Twitch login): right-click a chat line for timeout/ban/
+  delete, slow-mode toggle, and a shared word filter for every overlay.
+- **`!commands` runner** with cooldowns, per-command overlay toggle and
+  OBS scene actions.
+- **Alerts**: follows/subs/raids as overlay lines, optional OBS scroll
+  banner file, and automatic OBS scene switching per event (with hold +
+  return).
+
+**Status & ops**
+
+- **Status board**: every destination's relay push state, platform live
+  state and viewer count in one grid, plus a live server resource line.
+- **Metrics**: 24h relay bandwidth chart + monthly bandwidth watchdog.
+- **Server doctor**: one-click checklist (Docker, relay, disk, MTU/MSS,
+  firewall, config freshness, outside-in 1935 probe) with provider
+  detection and a ufw auto-fix button.
+- **Encrypted backups**: scheduled .katbak backups of config + keys
+  (PBKDF2 + AES-GCM), one-click restore.
+- Key rotation reminders, relay health status, per-platform live checks.
+
+**Not in v1.0.0 (on purpose)**: Kick/YouTube are read-only until their
+OAuth logins land; the Twitch poll widget needs an affiliate/partner
+channel; the TikTok *chat* connector is delayed (TikTok video works
+today); second-PC OBS is post-release. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Project docs
 
